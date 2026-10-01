@@ -268,7 +268,9 @@ struct DriverExperienceView: View {
             }
             .background(TrypsStyle.paleGreen.opacity(0.35))
             .navigationTitle("Drive")
+#if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+#endif
         }
         .sheet(isPresented: $isShowingAccount) {
             FirebaseAccountView(account: account, locationManager: locationManager)
