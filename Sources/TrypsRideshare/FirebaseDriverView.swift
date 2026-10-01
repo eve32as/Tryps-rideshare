@@ -10,6 +10,16 @@ private struct DriverOffer: Identifiable {
     let dropOff: CLLocationCoordinate2D
     let rideType: String
 }
+.onChange(of: driver.activeRideStatus) { _, status in
+    guard let rideID = driver.activeRideId,
+          let pickup = driver.activeRidePickup,
+          let dropOff = driver.activeRideDropOff,
+          let status else {
+        navigation.stop()
+        return
+    }
+    navigation.start(rideID: rideID, pickup: pickup, dropOff: dropOff, status: status)
+}
 
 @MainActor
 private final class FirebaseDriverStore: ObservableObject {
@@ -19,6 +29,8 @@ private final class FirebaseDriverStore: ObservableObject {
     @Published private(set) var applicationSubmitted = false
     @Published private(set) var activeRideId: String?
     @Published private(set) var activeRideStatus: String?
+    @Published private(set) var activeRidePickup: CLLocationCoordinate2D?
+    @Published private(set) var activeRideDropOff: CLLocationCoordinate2D?
     @Published private(set) var isAvailable = false
     @Published private(set) var isWorking = false
     @Published var errorMessage: String?
@@ -60,14 +72,23 @@ private final class FirebaseDriverStore: ObservableObject {
                         $0.data()["status"] as? String ?? ""
                     )
                 })?.documentID
+                let activeRideData = snapshot?.documents.first(where: {
+                    $0.documentID == activeRideID
+                })?.data()
+                let pickup = (activeRideData?["pickup"] as? [String: Any]).flatMap(Self.coordinate)
+                let dropOff = (activeRideData?["dropOff"] as? [String: Any]).flatMap(Self.coordinate)
                 Task { @MainActor in
                     guard let self else { return }
                     if let activeRideID, self.activeRideId != activeRideID {
                         self.activeRideId = activeRideID
+                        self.activeRidePickup = pickup
+                        self.activeRideDropOff = dropOff
                         self.listenForActiveRide(activeRideID)
                     } else if activeRideID == nil, self.activeRideId != nil {
                         self.activeRideId = nil
                         self.activeRideStatus = nil
+                        self.activeRidePickup = nil
+                        self.activeRideDropOff = nil
                         self.rideListener?.remove()
                         self.rideListener = nil
                     }
@@ -120,6 +141,8 @@ private final class FirebaseDriverStore: ObservableObject {
         applicationSubmitted = false
         activeRideId = nil
         activeRideStatus = nil
+        activeRidePickup = nil
+        activeRideDropOff = nil
         isAvailable = false
     }
 
@@ -213,14 +236,21 @@ private final class FirebaseDriverStore: ObservableObject {
         rideListener = Firestore.firestore().collection("rides").document(rideID)
             .addSnapshotListener { [weak self] snapshot, _ in
                 let status = snapshot?.data()?["status"] as? String
+                let rideData = snapshot?.data()
+                let pickup = (rideData?["pickup"] as? [String: Any]).flatMap(Self.coordinate)
+                let dropOff = (rideData?["dropOff"] as? [String: Any]).flatMap(Self.coordinate)
                 Task { @MainActor in
                     if status == "cancelled" || status == "completed" {
                         self?.activeRideId = nil
                         self?.activeRideStatus = nil
+                        self?.activeRidePickup = nil
+                        self?.activeRideDropOff = nil
                         self?.rideListener?.remove()
                         self?.rideListener = nil
                     } else {
                         self?.activeRideStatus = status
+                        self?.activeRidePickup = pickup
+                        self?.activeRideDropOff = dropOff
                     }
                 }
             }
@@ -256,6 +286,7 @@ struct FirebaseDriverView: View {
     @ObservedObject var account: FirebaseAccountStore
     @ObservedObject var locationManager: PickupLocationManager
     @StateObject private var driver = FirebaseDriverStore.shared
+    @StateObject private var navigation = DriverNavigationStore.shared
     @State private var displayName = ""
     @State private var vehicle = ""
     @State private var plate = ""
@@ -285,6 +316,16 @@ struct FirebaseDriverView: View {
                 driver.stop()
             }
         }
+        .onChange(of: driver.activeRideStatus) { _, status in
+            guard let rideID = driver.activeRideId,
+                  let pickup = driver.activeRidePickup,
+                  let dropOff = driver.activeRideDropOff,
+                  let status else {
+                navigation.stop()
+                return
+            }
+            navigation.start(rideID: rideID, pickup: pickup, dropOff: dropOff, status: status)
+        }
         .task(id: driver.isAvailable) {
             guard driver.isAvailable else {
                 locationManager.stopUpdatingLocation()
@@ -302,6 +343,7 @@ struct FirebaseDriverView: View {
         }
         .onDisappear {
             driver.stop()
+            navigation.stop()
         }
     }
 
@@ -390,6 +432,9 @@ struct FirebaseDriverView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Current trip · \(status.replacingOccurrences(of: "_", with: " ").capitalized)")
                         .font(.subheadline.weight(.semibold))
+                    if navigation.isNavigating {
+                        DriverNavigationPanel(navigation: navigation)
+                    }
                     Button(nextTripAction(for: status)) {
                         Task { await driver.advanceTrip() }
                     }

@@ -3,9 +3,17 @@ import SwiftUI
 #if canImport(FirebaseCore)
 import FirebaseCore
 #endif
+#if canImport(UIKit)
+import UIKit
+class TrypsApplicationDelegate: NSObject, UIApplicationDelegate { }
+#endif
 
 @main
 struct TrypsRideshareApp: App {
+#if canImport(UIKit)
+    @UIApplicationDelegateAdaptor(TrypsApplicationDelegate.self) private var applicationDelegate
+#endif
+
     init() {
         #if canImport(FirebaseCore)
         if Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist") != nil,

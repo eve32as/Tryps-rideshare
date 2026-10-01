@@ -52,6 +52,12 @@ GCLOUD_PROJECT=YOUR_FIREBASE_PROJECT_ID node functions/scripts/grant-admin.js FI
 
 After adding the claim, sign out and back in or use **Refresh account access** in the profile. An administrator client can then call `approveDriverApplication` with the pending driver's UID. Approved drivers must allow foreground location and keep the driver screen open while online; location refreshes every minute, and locations older than two minutes are excluded from offers.
 
+### Driver turn-by-turn and CarPlay
+
+During an assigned trip, the driver app requests a MapKit driving route to the pickup, then switches navigation to the drop-off after arrival. It displays the route and next instruction, advances maneuvers using live GPS, and speaks instructions. CarPlay receives the same trip destination, upcoming maneuvers, and remaining time/distance through a `CPMapTemplate` navigation session. Active navigation requests Always location authorization and uses background location updates so guidance can continue when the phone screen is locked.
+
+CarPlay navigation is not enabled for distribution until Apple approves the app for the CarPlay Maps entitlement (`com.apple.developer.carplay-maps`) and the provisioning profile includes it. The project includes the entitlement and scene manifest; they do not grant Apple approval. Request the entitlement in the Apple Developer account, then build and test with an eligible CarPlay simulator or vehicle. Explain foreground/background location use in the app privacy disclosures and request background access only for an active driver trip.
+
 ### Local checks
 
 ```sh
