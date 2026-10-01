@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readConfig } from "../src/config.js";
-import { calculateRideFare, isValidLocation } from "../src/validation.js";
+import { calculateRideFare, isValidLocation, isValidMapCenter } from "../src/validation.js";
 
 const validEnvironment = {
   DATABASE_URL: "postgres://localhost/tryps",
@@ -88,6 +88,13 @@ test("accepts valid pickup coordinates and rejects out-of-range values", () => {
     latitude: 37,
     longitude: -122,
   }), false);
+});
+
+test("validates heatmap map centers", () => {
+  assert.equal(isValidMapCenter(37.78, -122.42), true);
+  assert.equal(isValidMapCenter(91, 0), false);
+  assert.equal(isValidMapCenter(0, -181), false);
+  assert.equal(isValidMapCenter(Number.NaN, 0), false);
 });
 
 test("calculates server-side estimated fares and rejects unsupported ride types or distances", () => {

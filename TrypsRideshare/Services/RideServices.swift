@@ -81,6 +81,16 @@ struct DriverRide: Decodable, Identifiable {
     let rideType: String
     let status: String
     let hasRated: Bool?
+
+    var pickupCoordinate: CLLocationCoordinate2D? {
+        guard let latitude = pickupLatitude, let longitude = pickupLongitude else { return nil }
+        return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
+    var destinationCoordinate: CLLocationCoordinate2D? {
+        guard let latitude = destinationLatitude, let longitude = destinationLongitude else { return nil }
+        return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
 }
 
 struct DriverHeatCell: Decodable, Identifiable {
@@ -113,6 +123,10 @@ struct TripStatus: Decodable, Identifiable {
     let id: String
     let pickup: String
     let destination: String
+    let pickupLatitude: Double?
+    let pickupLongitude: Double?
+    let destinationLatitude: Double?
+    let destinationLongitude: Double?
     let rideType: String
     let amountCents: Int
     let currency: String
@@ -124,6 +138,16 @@ struct TripStatus: Decodable, Identifiable {
     let driverLatitude: Double?
     let driverLongitude: Double?
     let hasRated: Bool
+
+    var pickupCoordinate: CLLocationCoordinate2D? {
+        guard let latitude = pickupLatitude, let longitude = pickupLongitude else { return nil }
+        return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
+    var destinationCoordinate: CLLocationCoordinate2D? {
+        guard let latitude = destinationLatitude, let longitude = destinationLongitude else { return nil }
+        return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
 }
 
 struct TripShare: Decodable {

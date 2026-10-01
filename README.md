@@ -109,10 +109,11 @@ status and the driver's latest location and expire 24 hours after the trip's
 scheduled, completed, or created time. Ratings are one per participant and only
 available after completion; saved places are private to the signed-in rider.
 
-The booking map retains only its most recent route geometry on device for up to
-24 hours and can redraw it during a network interruption. This is not an offline
-map download or turn-by-turn navigation; Apple map tiles and directions may still
-be unavailable without connectivity, and location can be stale in a tunnel.
+The booking and active-ride maps retain only the most recent route geometry on
+device for up to 24 hours and can redraw it during a network interruption. This
+is not an offline map download or turn-by-turn navigation; Apple map tiles and
+directions may still be unavailable without connectivity, and location can be
+stale in a tunnel.
 
 The signed fare quote is charged when the rider confirms payment; the sample rate
 card is not a finalized production pricing policy. Configure Stripe in test mode

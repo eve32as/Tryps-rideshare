@@ -686,6 +686,19 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 10) {
                             Label(ride.pickup, systemImage: "circle.fill")
                             Label(ride.destination, systemImage: "mappin.and.ellipse")
+                            if ride.status == "confirmed",
+                               let pickup = ride.pickupCoordinate,
+                               let destination = ride.destinationCoordinate {
+                                RouteMapPreview(
+                                    pickupCoordinate: pickup,
+                                    destinationCoordinate: destination,
+                                    userCoordinate: locationManager.coordinate,
+                                    sessionToken: nil
+                                )
+                                .frame(height: 150)
+                                .clipShape(RoundedRectangle(cornerRadius: 14))
+                                .accessibilityLabel("Saved route preview for your assigned ride")
+                            }
                             if ride.status == "confirmed", let geofenceMessage = locationManager.geofenceMessage {
                                 Label(geofenceMessage, systemImage: "location.circle")
                                     .font(.system(size: 11, weight: .medium))
@@ -830,6 +843,7 @@ struct ContentView: View {
         do {
             try await RideAPI.completeRide(token: sessionToken, rideID: ride.id)
             driverRides.removeAll { $0.id == ride.id }
+            locationManager.syncRideGeofences(for: driverRides)
             driverAvailable = true
         } catch {
             errorMessage = error.localizedDescription
@@ -1189,6 +1203,7 @@ private struct RouteMapPreview: View {
     let destinationCoordinate: CLLocationCoordinate2D?
     let userCoordinate: CLLocationCoordinate2D?
     let sessionToken: String?
+    var driverCoordinate: CLLocationCoordinate2D? = nil
 
     @State private var cameraPosition = MapCameraPosition.region(
         MKCoordinateRegion(
@@ -1227,6 +1242,11 @@ private struct RouteMapPreview: View {
                     mapPin(symbol: "mappin.and.ellipse", color: Color(red: 0.83, green: 0.40, blue: 0.25))
                 }
             }
+            if let driverCoordinate {
+                Annotation("Driver", coordinate: driverCoordinate) {
+                    mapPin(symbol: "car.fill", color: TrypsStyle.ink)
+                }
+            }
             if let routePolyline {
                 MapPolyline(routePolyline)
                     .stroke(TrypsStyle.accent, lineWidth: 5)
@@ -1241,6 +1261,9 @@ private struct RouteMapPreview: View {
         .onChange(of: pickupCoordinate?.longitude) { _, _ in updateMap() }
         .onChange(of: destinationCoordinate?.latitude) { _, _ in updateMap() }
         .onChange(of: destinationCoordinate?.longitude) { _, _ in updateMap() }
+        .task {
+            updateMap()
+        }
         .task(id: heatmapRequestKey) {
             await refreshHeatmap()
         }
@@ -1488,7 +1511,20 @@ private struct TripActivityRow: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(TrypsStyle.muted)
             }
-            if let coordinate = driverCoordinate, trip.status == "confirmed" {
+            if trip.status == "confirmed",
+               let pickup = trip.pickupCoordinate,
+               let destination = trip.destinationCoordinate {
+                RouteMapPreview(
+                    pickupCoordinate: pickup,
+                    destinationCoordinate: destination,
+                    userCoordinate: nil,
+                    sessionToken: nil,
+                    driverCoordinate: driverCoordinate
+                )
+                .frame(height: 140)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .accessibilityLabel("Ride route with the driver's last reported location")
+            } else if let coordinate = driverCoordinate, trip.status == "confirmed" {
                 Map {
                     Annotation("Driver", coordinate: coordinate) {
                         Image(systemName: "car.fill")

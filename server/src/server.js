@@ -6,7 +6,7 @@ import Stripe from "stripe";
 import { createRemoteJWKSet, importPKCS8, jwtVerify, SignJWT } from "jose";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readConfig } from "./config.js";
-import { isValidLocation } from "./validation.js";
+import { isValidLocation, isValidMapCenter } from "./validation.js";
 import { createFareQuote, verifyFareQuote } from "./fare-quotes.js";
 import { getDrivingDistanceMeters, RouteProviderError } from "./routes.js";
 
@@ -428,10 +428,7 @@ app.get("/v1/driver/profile", authenticate, requireRole("driver"), asyncRoute(as
 app.get("/v1/driver-heatmap", authenticate, requireRole("rider"), asyncRoute(async (req, res) => {
   const latitude = Number(req.query.latitude);
   const longitude = Number(req.query.longitude);
-  if (
-    !Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
-    !Number.isFinite(longitude) || longitude < -180 || longitude > 180
-  ) {
+  if (!isValidMapCenter(latitude, longitude)) {
     return res.status(400).json({ error: "A valid map center is required." });
   }
   const result = await pool.query(
@@ -939,6 +936,10 @@ app.post("/v1/rides/:rideId/refund", authenticate, requireRole("rider"), asyncRo
 app.get("/v1/rides/:rideId", authenticate, requireRole("rider"), asyncRoute(async (req, res) => {
   const result = await pool.query(
     `SELECT id, pickup_label AS pickup, destination_label AS destination, ride_type AS "rideType",
+            ST_Y(pickup::geometry) AS "pickupLatitude",
+            ST_X(pickup::geometry) AS "pickupLongitude",
+            ST_Y(destination::geometry) AS "destinationLatitude",
+            ST_X(destination::geometry) AS "destinationLongitude",
             amount_cents AS "amountCents", currency, status, scheduled_at AS "scheduledAt",
             created_at AS "createdAt", payment_intent_id IS NOT NULL AS "paymentReady",
             ST_Y(d.location::geometry) AS "driverLatitude",
@@ -961,6 +962,10 @@ app.get("/v1/rides/:rideId", authenticate, requireRole("rider"), asyncRoute(asyn
 app.get("/v1/rides", authenticate, requireRole("rider"), asyncRoute(async (req, res) => {
   const result = await pool.query(
     `SELECT id, pickup_label AS pickup, destination_label AS destination,
+            ST_Y(pickup::geometry) AS "pickupLatitude",
+            ST_X(pickup::geometry) AS "pickupLongitude",
+            ST_Y(destination::geometry) AS "destinationLatitude",
+            ST_X(destination::geometry) AS "destinationLongitude",
             ride_type AS "rideType", amount_cents AS "amountCents", currency, status,
             scheduled_at AS "scheduledAt", created_at AS "createdAt",
             payment_intent_id IS NOT NULL AS "paymentReady",

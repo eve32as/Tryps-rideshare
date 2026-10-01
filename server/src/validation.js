@@ -2,6 +2,11 @@ export function isCoordinate(value) {
   return Number.isFinite(value) && value >= -180 && value <= 180;
 }
 
+export function isValidMapCenter(latitude, longitude) {
+  return Number.isFinite(latitude) && latitude >= -90 && latitude <= 90 &&
+    Number.isFinite(longitude) && longitude >= -180 && longitude <= 180;
+}
+
 export function isValidLocation(value) {
   return (
     value !== null &&
