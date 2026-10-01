@@ -169,7 +169,7 @@ class MainViewModel(
                 }
             }
             if (user.role == UserRole.DRIVER) launch {
-                rides.observeOpenRides().catch { showError(it) }.collect { open ->
+                rides.observeOpenRides(user.id).catch { showError(it) }.collect { open ->
                     mutableState.update { it.copy(openRides = open) }
                 }
             }

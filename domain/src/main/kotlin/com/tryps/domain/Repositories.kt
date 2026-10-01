@@ -20,7 +20,7 @@ interface RideRepository {
     suspend fun searchPlaces(query: String, near: GeoPoint?): List<Place>
     fun observeActiveRide(userId: String, role: UserRole): Flow<Ride?>
     fun observeHistory(userId: String, role: UserRole): Flow<List<Ride>>
-    fun observeOpenRides(): Flow<List<Ride>>
+    fun observeOpenRides(driverId: String): Flow<List<Ride>>
     suspend fun quote(pickup: Place, destination: Place): RideQuote
     suspend fun request(rider: UserProfile, pickup: Place, destination: Place, quote: RideQuote)
     suspend fun accept(rideId: String, driver: UserProfile)

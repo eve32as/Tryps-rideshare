@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -232,9 +233,18 @@ private fun DriverScreen(state: MainUiState, viewModel: MainViewModel) {
         if (!state.isAvailable) Text("Go online to receive requests", modifier = Modifier.padding(top = 16.dp))
         else if (state.openRides.isEmpty()) Text("Searching for riders…", modifier = Modifier.padding(top = 16.dp))
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(state.openRides, key = Ride::id) { ride ->
+            itemsIndexed(state.openRides, key = { _, ride -> ride.id }) { index, ride ->
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
+                        ride.pickupEtaSeconds?.let { eta ->
+                            val minutes = ((eta + 59) / 60).coerceAtLeast(1)
+                            Text(
+                                if (index == 0) "Best traffic-aware match · ~$minutes min to pickup"
+                                else "~$minutes min to pickup",
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
                         Text(ride.riderName.ifBlank { "Rider" }, fontWeight = FontWeight.Bold)
                         Text("${ride.pickup.name} → ${ride.destination.name}")
                         Text(money(ride.quote.amountCents, ride.quote.currency))

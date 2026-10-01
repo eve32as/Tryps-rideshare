@@ -1,10 +1,10 @@
 {
   "name": "functions",
   "version": "1.0.0",
-  "description": "Tryps secure ride pricing and place search backend",
+  "description": "Tryps ride recommendations, pricing, and place search backend",
   "main": "index.js",
   "scripts": {
-    "test": "node --check index.js"
+    "test": "node --test && node --check index.js"
   },
   "keywords": [],
   "author": "",

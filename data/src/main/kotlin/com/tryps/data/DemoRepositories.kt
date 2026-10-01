@@ -62,8 +62,19 @@ class DemoRideRepository : RideRepository {
             }
         }
 
-    override fun observeOpenRides(): Flow<List<Ride>> =
-        rides.map { current -> current.filter { it.status == RideStatus.SEARCHING } }
+    override fun observeOpenRides(driverId: String): Flow<List<Ride>> =
+        combine(rides, locations) { current, driverLocations ->
+            val location = driverLocations[driverId]
+            val openRides = current.filter { it.status == RideStatus.SEARCHING }
+            if (location == null) {
+                openRides.sortedBy(Ride::createdAtEpochMillis)
+            } else {
+                openRides.map { ride ->
+                    val distance = approximateDistance(location, ride.pickup.location)
+                    ride.copy(pickupEtaSeconds = (distance / 8.0).toInt())
+                }.sortedBy { it.pickupEtaSeconds }
+            }
+        }
 
     override suspend fun quote(pickup: Place, destination: Place): RideQuote {
         val distance = approximateDistance(pickup.location, destination.location).coerceAtLeast(1_000)

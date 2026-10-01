@@ -47,4 +47,5 @@ data class Ride(
     val driverName: String = "",
     val driverLocation: GeoPoint? = null,
     val rating: Int? = null,
+    val pickupEtaSeconds: Int? = null,
 )

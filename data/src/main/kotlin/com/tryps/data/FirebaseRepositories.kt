@@ -15,10 +15,15 @@ import com.tryps.model.RideQuote
 import com.tryps.model.RideStatus
 import com.tryps.model.UserProfile
 import com.tryps.model.UserRole
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.tasks.await
 
 class FirebaseAccountRepository(
@@ -111,8 +116,56 @@ class FirebaseRideRepository(
         }.sortedByDescending(Ride::createdAtEpochMillis)
     }
 
-    override fun observeOpenRides(): Flow<List<Ride>> = rides.map { current ->
-        current.filter { it.status == RideStatus.SEARCHING }.sortedBy(Ride::createdAtEpochMillis)
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun observeOpenRides(driverId: String): Flow<List<Ride>> =
+        combine(rides, observeDriverDispatchState(driverId)) { current, dispatchState ->
+            current to dispatchState
+        }
+            .distinctUntilChangedBy { (current, dispatchState) ->
+                current.filter { it.status == RideStatus.SEARCHING }.map(Ride::id) to dispatchState
+            }
+            .mapLatest { (current, dispatchState) ->
+                val openRides = current.filter { it.status == RideStatus.SEARCHING }
+                    .sortedBy(Ride::createdAtEpochMillis)
+                if (openRides.isEmpty() || !dispatchState.first) return@mapLatest openRides
+
+                val recommendations = try {
+                    val result = functions.getHttpsCallable("getRideRecommendations")
+                        .call(mapOf("driverId" to driverId))
+                        .await()
+                        .getData() as? Map<*, *>
+                    result?.get("recommendations") as? List<*> ?: emptyList<Any>()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    emptyList()
+                }
+                val etaByRide = recommendations.mapNotNull { value ->
+                    val recommendation = value as? Map<*, *> ?: return@mapNotNull null
+                    val rideId = recommendation["rideId"] as? String ?: return@mapNotNull null
+                    val eta = (recommendation["pickupEtaSeconds"] as? Number)?.toInt() ?: return@mapNotNull null
+                    rideId to eta
+                }.toMap()
+
+                openRides.withIndex()
+                    .sortedWith(compareBy<IndexedValue<Ride>> { etaByRide[it.value.id] ?: Int.MAX_VALUE }.thenBy { it.index })
+                    .map { indexedRide ->
+                        indexedRide.value.copy(pickupEtaSeconds = etaByRide[indexedRide.value.id])
+                    }
+            }
+
+    private fun observeDriverDispatchState(driverId: String): Flow<Pair<Boolean, Long>> = callbackFlow {
+        val reference = firestore.collection("drivers").document(driverId)
+        val listener = reference.addSnapshotListener { snapshot, error ->
+            if (error != null) {
+                close(error)
+            } else {
+                val available = snapshot?.getBoolean("available") == true
+                val locationUpdateBucket = (snapshot?.getTimestamp("updatedAt")?.seconds ?: 0L) / 30
+                trySend(available to locationUpdateBucket)
+            }
+        }
+        awaitClose { listener.remove() }
     }
 
     override suspend fun quote(pickup: Place, destination: Place): RideQuote {
