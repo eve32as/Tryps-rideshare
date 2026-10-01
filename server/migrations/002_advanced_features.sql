@@ -5,7 +5,8 @@ ALTER TABLE rides
     ADD COLUMN IF NOT EXISTS share_token_hash TEXT,
     ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ,
-    ADD COLUMN IF NOT EXISTS refund_id TEXT;
+    ADD COLUMN IF NOT EXISTS refund_id TEXT,
+    ADD COLUMN IF NOT EXISTS refund_attempt INTEGER NOT NULL DEFAULT 0 CHECK (refund_attempt >= 0);
 
 UPDATE rides
 SET payment_created_at = created_at
@@ -25,6 +26,11 @@ ALTER TABLE rides DROP CONSTRAINT IF EXISTS rides_status_check;
 ALTER TABLE rides
     ADD CONSTRAINT rides_status_check
     CHECK (status IN ('scheduled', 'awaiting_payment', 'confirmed', 'refund_pending', 'completed', 'cancelled'));
+
+UPDATE rides
+SET refund_attempt = 1
+WHERE status = 'refund_pending'
+  AND refund_attempt = 0;
 
 CREATE UNIQUE INDEX IF NOT EXISTS rides_share_token_hash_idx
     ON rides (share_token_hash)

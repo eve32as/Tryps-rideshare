@@ -137,20 +137,23 @@ app.post("/v1/webhooks/stripe", express.raw({ type: "application/json", limit: "
     } else if (event.type === "refund.updated" || event.type === "refund.failed") {
       const refund = event.data.object;
       const rideId = refund.metadata?.rideId;
-      if (rideId && refund.status === "succeeded") {
-        const finalized = await finalizeRideRefund(rideId, refund.id);
+      const attempt = Number(refund.metadata?.attempt);
+      if (rideId && Number.isSafeInteger(attempt) && attempt > 0 && refund.status === "succeeded") {
+        const finalized = await finalizeRideRefund(rideId, refund.id, attempt);
         if (finalized) {
           await Promise.all([
             notifyUser(finalized.riderId, "Ride canceled", "Your full refund has been processed by Stripe.", rideId),
             notifyUser(finalized.driverId, "Ride canceled", "The rider canceled this ride.", rideId),
           ]);
         }
-      } else if (rideId && refund.status === "failed") {
+      } else if (rideId && Number.isSafeInteger(attempt) && attempt > 0 &&
+                 (refund.status === "failed" || refund.status === "canceled")) {
         const failed = await pool.query(
           `UPDATE rides SET status = 'confirmed', refund_id = NULL
-           WHERE id = $1 AND status = 'refund_pending' AND (refund_id IS NULL OR refund_id = $2)
+           WHERE id = $1 AND status = 'refund_pending' AND refund_attempt = $3
+             AND (refund_id IS NULL OR refund_id = $2)
            RETURNING rider_user_id`,
-          [rideId, refund.id],
+          [rideId, refund.id, attempt],
         );
         if (failed.rowCount) {
           await notifyUser(failed.rows[0].rider_user_id, "Refund could not be completed", "Your ride remains confirmed. Contact support if you still need help.", rideId);
@@ -685,7 +688,7 @@ app.delete("/v1/rides/:rideId", authenticate, requireRole("rider"), asyncRoute(a
   return res.json({ cancelled: cancelled.rowCount > 0 });
 }));
 
-async function finalizeRideRefund(rideId, refundId) {
+async function finalizeRideRefund(rideId, refundId, attempt) {
   const client = await pool.connect();
   let transactionOpen = false;
   try {
@@ -694,9 +697,10 @@ async function finalizeRideRefund(rideId, refundId) {
     const result = await client.query(
       `UPDATE rides
        SET status = 'cancelled', refunded_at = COALESCE(refunded_at, now()), refund_id = $2
-       WHERE id = $1 AND status = 'refund_pending' AND (refund_id IS NULL OR refund_id = $2)
+       WHERE id = $1 AND status = 'refund_pending' AND refund_attempt = $3
+         AND (refund_id IS NULL OR refund_id = $2)
        RETURNING rider_user_id, driver_user_id`,
-      [rideId, refundId],
+      [rideId, refundId, attempt],
     );
     if (!result.rowCount) {
       await client.query("ROLLBACK");
@@ -724,6 +728,37 @@ async function finalizeRideRefund(rideId, refundId) {
   }
 }
 
+async function getOrCreateRideRefund(rideId, paymentIntentId, refundId, attempt) {
+  if (refundId) {
+    const refund = await stripe.refunds.retrieve(refundId);
+    return { refund };
+  }
+  const existing = await stripe.refunds.list({ payment_intent: paymentIntentId, limit: 100 });
+  const existingRideRefund = existing.data.find((refund) =>
+    refund.metadata?.rideId === rideId &&
+      (refund.metadata?.attempt === String(attempt) ||
+        (attempt === 1 &&
+          (refund.metadata?.attempt === undefined || refund.metadata?.attempt === null))));
+  if (existingRideRefund) return { refund: existingRideRefund };
+  try {
+    return {
+      refund: await stripe.refunds.create(
+        {
+          payment_intent: paymentIntentId,
+          reason: "requested_by_customer",
+          reverse_transfer: true,
+          refund_application_fee: true,
+          metadata: { rideId, attempt: String(attempt) },
+        },
+        { idempotencyKey: `ride-refund-${rideId}-${attempt}` },
+      ),
+    };
+  } catch (error) {
+    if (error.type === "StripeInvalidRequestError") return { failed: error };
+    throw error;
+  }
+}
+
 app.post("/v1/rides/:rideId/refund", authenticate, requireRole("rider"), asyncRoute(async (req, res) => {
   const client = await pool.connect();
   let transactionOpen = false;
@@ -732,7 +767,7 @@ app.post("/v1/rides/:rideId/refund", authenticate, requireRole("rider"), asyncRo
     await client.query("BEGIN");
     transactionOpen = true;
     const result = await client.query(
-      `SELECT payment_intent_id, status, driver_user_id, refund_id
+      `SELECT payment_intent_id, status, driver_user_id, refund_id, refund_attempt
        FROM rides WHERE id = $1 AND rider_user_id = $2 FOR UPDATE`,
       [req.params.rideId, req.user.id],
     );
@@ -748,10 +783,12 @@ app.post("/v1/rides/:rideId/refund", authenticate, requireRole("rider"), asyncRo
       return res.json({ cancelled: true, refunded: true, refundId: ride.refund_id });
     }
     if (ride.status === "confirmed") {
-      await client.query(
-        "UPDATE rides SET status = 'refund_pending' WHERE id = $1 AND status = 'confirmed'",
+      const started = await client.query(
+        `UPDATE rides SET status = 'refund_pending', refund_attempt = refund_attempt + 1
+         WHERE id = $1 AND status = 'confirmed' RETURNING refund_attempt`,
         [req.params.rideId],
       );
+      ride.refund_attempt = started.rows[0].refund_attempt;
     } else if (ride.status !== "refund_pending") {
       await client.query("ROLLBACK");
       transactionOpen = false;
@@ -760,26 +797,39 @@ app.post("/v1/rides/:rideId/refund", authenticate, requireRole("rider"), asyncRo
     await client.query("COMMIT");
     transactionOpen = false;
 
-    const refund = await stripe.refunds.create(
-      {
-        payment_intent: ride.payment_intent_id,
-        reason: "requested_by_customer",
-        reverse_transfer: true,
-        refund_application_fee: true,
-        metadata: { rideId: req.params.rideId },
-      },
-      { idempotencyKey: `ride-refund-${req.params.rideId}` },
+    const refundAttempt = await getOrCreateRideRefund(
+      req.params.rideId,
+      ride.payment_intent_id,
+      ride.refund_id,
+      ride.refund_attempt,
     );
+    if (refundAttempt.failed) {
+      await pool.query(
+        `UPDATE rides SET status = 'confirmed', refund_id = NULL
+         WHERE id = $1 AND status = 'refund_pending' AND refund_attempt = $2`,
+        [req.params.rideId, ride.refund_attempt],
+      );
+      return res.status(409).json({ error: "Stripe could not refund this payment. Contact support for assistance." });
+    }
+    const refund = refundAttempt.refund;
     await pool.query(
       `UPDATE rides SET refund_id = $2
-       WHERE id = $1 AND status = 'refund_pending' AND refund_id IS NULL`,
-      [req.params.rideId, refund.id],
+       WHERE id = $1 AND status = 'refund_pending' AND refund_attempt = $3 AND refund_id IS NULL`,
+      [req.params.rideId, refund.id, ride.refund_attempt],
     );
+    if (refund.status === "failed" || refund.status === "canceled") {
+      await pool.query(
+        `UPDATE rides SET status = 'confirmed', refund_id = NULL
+         WHERE id = $1 AND status = 'refund_pending' AND refund_attempt = $2`,
+        [req.params.rideId, ride.refund_attempt],
+      );
+      return res.status(409).json({ error: "Stripe could not complete this refund. The ride remains confirmed; contact support if needed." });
+    }
     if (refund.status !== "succeeded") {
       return res.status(202).json({ cancelled: false, refundPending: true, refundId: refund.id });
     }
 
-    const finalized = await finalizeRideRefund(req.params.rideId, refund.id);
+    const finalized = await finalizeRideRefund(req.params.rideId, refund.id, ride.refund_attempt);
     if (finalized) {
       await Promise.all([
         notifyUser(finalized.riderId, "Ride canceled", "Your full refund has been processed by Stripe.", req.params.rideId),
@@ -789,13 +839,6 @@ app.post("/v1/rides/:rideId/refund", authenticate, requireRole("rider"), asyncRo
     return res.json({ cancelled: true, refunded: true, refundId: refund.id });
   } catch (error) {
     if (transactionOpen) await client.query("ROLLBACK").catch(() => {});
-    if (error.type === "StripeInvalidRequestError") {
-      await pool.query(
-        "UPDATE rides SET status = 'confirmed' WHERE id = $1 AND status = 'refund_pending'",
-        [req.params.rideId],
-      ).catch(() => {});
-      return res.status(409).json({ error: "Stripe could not refund this payment. Contact support for assistance." });
-    }
     if (!transactionOpen && error.type !== "StripeAPIError" && error.type !== "StripeConnectionError" &&
         error.type !== "StripeRateLimitError" && error.type !== "StripeAuthenticationError" &&
         error.type !== "StripePermissionError" && error.type !== "StripeIdempotencyError") {
@@ -1084,10 +1127,67 @@ async function expireUnpaidRideReservations() {
   }
 }
 
+async function reconcilePendingRideRefunds() {
+  try {
+    const pending = await pool.query(
+      `SELECT id, payment_intent_id, refund_id, refund_attempt
+       FROM rides WHERE status = 'refund_pending'
+       ORDER BY created_at
+       LIMIT 20`,
+    );
+    for (const ride of pending.rows) {
+      try {
+        const refundAttempt = await getOrCreateRideRefund(
+          ride.id,
+          ride.payment_intent_id,
+          ride.refund_id,
+          ride.refund_attempt,
+        );
+        if (refundAttempt.failed) {
+          await pool.query(
+            `UPDATE rides SET status = 'confirmed', refund_id = NULL
+             WHERE id = $1 AND status = 'refund_pending' AND refund_attempt = $2`,
+            [ride.id, ride.refund_attempt],
+          );
+          continue;
+        }
+        const refund = refundAttempt.refund;
+        await pool.query(
+          `UPDATE rides SET refund_id = $2
+           WHERE id = $1 AND status = 'refund_pending' AND refund_attempt = $3 AND refund_id IS NULL`,
+          [ride.id, refund.id, ride.refund_attempt],
+        );
+        if (refund.status === "succeeded") {
+          const finalized = await finalizeRideRefund(ride.id, refund.id, ride.refund_attempt);
+          if (finalized) {
+            await Promise.all([
+              notifyUser(finalized.riderId, "Ride canceled", "Your full refund has been processed by Stripe.", ride.id),
+              notifyUser(finalized.driverId, "Ride canceled", "The rider canceled this ride.", ride.id),
+            ]);
+          }
+        } else if (refund.status === "failed" || refund.status === "canceled") {
+          await pool.query(
+            `UPDATE rides SET status = 'confirmed', refund_id = NULL
+             WHERE id = $1 AND status = 'refund_pending' AND refund_attempt = $3
+               AND (refund_id IS NULL OR refund_id = $2)`,
+            [ride.id, refund.id, ride.refund_attempt],
+          );
+        }
+      } catch (error) {
+        console.error(`Could not reconcile ride refund ${ride.id}:`, error);
+      }
+    }
+  } catch (error) {
+    console.error("Could not load pending ride refunds:", error);
+  }
+}
+
 const reservationCleanup = setInterval(expireUnpaidRideReservations, 60_000);
 reservationCleanup.unref();
 const scheduledRideDispatch = setInterval(dispatchScheduledRides, 60_000);
 scheduledRideDispatch.unref();
+const refundReconciliation = setInterval(reconcilePendingRideRefunds, 60_000);
+refundReconciliation.unref();
 
 app.use((error, _req, res, _next) => {
   console.error("API request failed:", error);
@@ -1102,6 +1202,7 @@ const server = app.listen(config.port, () => {
 async function shutdown() {
   clearInterval(reservationCleanup);
   clearInterval(scheduledRideDispatch);
+  clearInterval(refundReconciliation);
   server.close();
   await pool.end();
 }
