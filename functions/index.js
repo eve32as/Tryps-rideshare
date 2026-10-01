@@ -5,6 +5,8 @@ const { initializeApp } = require("firebase-admin/app");
 const { FieldValue, Timestamp, getFirestore } = require("firebase-admin/firestore");
 const { onCall, onRequest, HttpsError } = require("firebase-functions/v2/https");
 const { onDocumentUpdated } = require("firebase-functions/v2/firestore");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { geohashForLocation, geohashQueryBounds } = require("geofire-common");
 const { defineSecret, defineString } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const Stripe = require("stripe");
@@ -12,18 +14,18 @@ const Stripe = require("stripe");
 const {
   calculateQuote,
   canTransitionRide,
-  distanceInKilometers,
+  isFreshDriverLocation,
+  rankNearbyDrivers,
   validCoordinate,
 } = require("./domain");
 
 initializeApp();
 const db = getFirestore();
 const REGION = "us-central1";
+const DRIVER_MATCH_RADIUS_KM = 15;
 const STRIPE_SECRET_KEY = defineSecret("STRIPE_SECRET_KEY");
 const STRIPE_WEBHOOK_SECRET = defineSecret("STRIPE_WEBHOOK_SECRET");
 const STRIPE_PUBLISHABLE_KEY = defineString("STRIPE_PUBLISHABLE_KEY", { default: "" });
-const DRIVER_SEARCH_LIMIT = 100;
-const DRIVER_MATCH_RADIUS_KM = 15;
 
 function authenticatedUser(request) {
   if (!request.auth) throw new HttpsError("unauthenticated", "Sign in to continue.");
@@ -60,30 +62,75 @@ function parseRideType(data) {
 }
 
 async function createDriverOffers(rideId, ride) {
-  const drivers = await db.collection("drivers")
-    .where("available", "==", true)
-    .limit(DRIVER_SEARCH_LIMIT)
-    .get();
-  const candidates = drivers.docs
-    .filter((driver) => driver.data().verified === true && validCoordinate(driver.data().location))
-    .map((driver) => ({
-      ref: driver.ref,
-      uid: driver.id,
-      distanceKm: distanceInKilometers(ride.pickup, driver.data().location),
-    }))
-    .filter((driver) => driver.distanceKm <= DRIVER_MATCH_RADIUS_KM)
-    .sort((a, b) => a.distanceKm - b.distanceKm)
-    .slice(0, 10);
-
+  const bounds = geohashQueryBounds(
+    [ride.pickup.latitude, ride.pickup.longitude],
+    DRIVER_MATCH_RADIUS_KM * 1000
+  );
+  const driverSnapshots = await Promise.all(bounds.map(([start, end]) =>
+    db.collection("drivers")
+      .where("available", "==", true)
+      .orderBy("geohash")
+      .startAt(start)
+      .endAt(end)
+      .get()
+  ));
+  const driverDocuments = new Map();
+  for (const snapshot of driverSnapshots) {
+    for (const document of snapshot.docs) driverDocuments.set(document.id, document);
+  }
+  const now = Date.now();
   const rideRef = db.collection("rides").doc(rideId);
+  const currentRide = await rideRef.get();
+  if (!currentRide.exists || currentRide.data().status !== "dispatching") return;
+  const previouslyOffered = new Set(currentRide.data().driverOfferAttemptedUids ?? []);
+  const currentDrivers = [...driverDocuments.values()].map((document) => {
+    const data = document.data();
+    return {
+      uid: document.id,
+      ref: document.ref,
+      available: data.available,
+      verified: data.verified,
+      location: data.location,
+      locationUpdatedAtMillis: data.locationUpdatedAt?.toMillis(),
+    };
+  }).filter((driver) => !previouslyOffered.has(driver.uid));
+  const candidates = rankNearbyDrivers(
+    currentDrivers,
+    ride.pickup,
+    DRIVER_MATCH_RADIUS_KM,
+    now
+  ).filter((candidate) => !previouslyOffered.has(candidate.uid));
+
   await db.runTransaction(async (transaction) => {
     const snapshot = await transaction.get(rideRef);
     if (!snapshot.exists || snapshot.data().status !== "dispatching" ||
         snapshot.data().paymentStatus !== "succeeded") return;
 
-    if (candidates.length === 0) {
+    const latestDrivers = await Promise.all(
+      candidates.map((candidate) => transaction.get(candidate.ref))
+    );
+    const latestAttemptedDrivers = new Set(snapshot.data().driverOfferAttemptedUids ?? []);
+    const eligibleCandidates = rankNearbyDrivers(
+      latestDrivers.map((document) => {
+        const data = document.data() ?? {};
+        return {
+          uid: document.id,
+          ref: document.ref,
+          available: document.exists && data.available,
+          verified: document.exists && data.verified,
+          location: data.location,
+          locationUpdatedAtMillis: data.locationUpdatedAt?.toMillis(),
+        };
+      }).filter((driver) => !latestAttemptedDrivers.has(driver.uid)),
+      ride.pickup,
+      DRIVER_MATCH_RADIUS_KM,
+      Date.now()
+    );
+
+    if (eligibleCandidates.length === 0) {
       transaction.update(rideRef, {
         status: "searching_driver",
+        driverOfferAttemptedUids: [],
         dispatchMessage: "No nearby drivers are available yet.",
         updatedAt: FieldValue.serverTimestamp(),
       });
@@ -91,7 +138,7 @@ async function createDriverOffers(rideId, ride) {
     }
 
     const expiresAt = Timestamp.fromMillis(Date.now() + 60_000);
-    for (const candidate of candidates) {
+    for (const candidate of eligibleCandidates) {
       transaction.set(candidate.ref.collection("offers").doc(rideId), {
         rideId,
         status: "pending",
@@ -104,8 +151,11 @@ async function createDriverOffers(rideId, ride) {
     }
     transaction.update(rideRef, {
       status: "offered",
-      offerCount: candidates.length,
-      offeredDriverUids: candidates.map((candidate) => candidate.uid),
+      offerCount: eligibleCandidates.length,
+      offeredDriverUids: eligibleCandidates.map((candidate) => candidate.uid),
+      driverOfferAttemptedUids: FieldValue.arrayUnion(
+        ...eligibleCandidates.map((candidate) => candidate.uid)
+      ),
       updatedAt: FieldValue.serverTimestamp(),
     });
   });
@@ -164,7 +214,13 @@ exports.createRideBooking = onCall({ region: REGION }, async (request) => {
       dropOff: quote.dropOff,
       rideType: quote.rideType,
       rideLabel: quote.rideLabel,
+      pricingVersion: quote.pricingVersion,
       distanceKm: quote.distanceKm,
+      straightLineDistanceKm: quote.straightLineDistanceKm,
+      baseFareCents: quote.baseFareCents,
+      distanceFareCents: quote.distanceFareCents,
+      bookingFeeCents: quote.bookingFeeCents,
+      minimumFareAdjustmentCents: quote.minimumFareAdjustmentCents,
       amountCents: quote.amountCents,
       currency: quote.currency,
       status: "awaiting_payment",
@@ -406,10 +462,41 @@ exports.setDriverAvailability = onCall({ region: REGION }, async (request) => {
   }
   await driverRef.update({
     available,
-    ...(available ? { location } : {}),
+    ...(available ? {
+      location,
+      geohash: geohashForLocation([location.latitude, location.longitude]),
+      locationUpdatedAt: FieldValue.serverTimestamp(),
+    } : {}),
     updatedAt: FieldValue.serverTimestamp(),
   });
   return { available };
+});
+
+exports.updateDriverLocation = onCall({ region: REGION }, async (request) => {
+  const uid = requireDriver(request);
+  const location = request.data?.location;
+  if (!validCoordinate(location)) {
+    throw new HttpsError("invalid-argument", "A valid driver location is required.");
+  }
+
+  const driverRef = db.collection("drivers").doc(uid);
+  let updated = false;
+  await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(driverRef);
+    if (!snapshot.exists || snapshot.data().verified !== true || snapshot.data().available !== true) {
+      throw new HttpsError("failed-precondition", "Go online to update your driver location.");
+    }
+    const lastUpdatedAt = snapshot.data().locationUpdatedAt?.toMillis();
+    if (Number.isFinite(lastUpdatedAt) && Date.now() - lastUpdatedAt < 10_000) return;
+    transaction.update(driverRef, {
+      location,
+      geohash: geohashForLocation([location.latitude, location.longitude]),
+      locationUpdatedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    updated = true;
+  });
+  return { updated };
 });
 
 exports.claimRideOffer = onCall({ region: REGION }, async (request) => {
@@ -428,7 +515,12 @@ exports.claimRideOffer = onCall({ region: REGION }, async (request) => {
       transaction.get(offerRef),
       transaction.get(rideRef),
     ]);
-    if (!driverSnapshot.exists || driverSnapshot.data().verified !== true || !driverSnapshot.data().available) {
+    if (!driverSnapshot.exists || driverSnapshot.data().verified !== true ||
+        !driverSnapshot.data().available ||
+        !isFreshDriverLocation(
+          driverSnapshot.data().locationUpdatedAt?.toMillis(),
+          Date.now()
+        )) {
       throw new HttpsError("failed-precondition", "Go online to accept ride offers.");
     }
     if (!offerSnapshot.exists || offerSnapshot.data().status !== "pending" ||
@@ -493,6 +585,67 @@ exports.dispatchPaidRide = onDocumentUpdated({
   const ride = event.data?.after.data();
   if (!ride || before?.paymentStatus === "succeeded" || ride.paymentStatus !== "succeeded") return;
   await createDriverOffers(event.params.rideId, ride);
+});
+
+exports.retryUnmatchedRides = onSchedule({
+  region: REGION,
+  schedule: "every 1 minutes",
+  timeZone: "UTC",
+}, async () => {
+  const cutoff = Timestamp.fromMillis(Date.now() - 60_000);
+  const staleRideQueries = ["searching_driver", "offered", "dispatching"].map((status) =>
+    db.collection("rides")
+      .where("status", "==", status)
+      .where("updatedAt", "<=", cutoff)
+      .orderBy("updatedAt")
+      .limit(50)
+      .get()
+  );
+  const [searchingSnapshot, offeredSnapshot, dispatchingSnapshot] = await Promise.all(staleRideQueries);
+  const staleRides = [
+    ...searchingSnapshot.docs.map((snapshot) => ({ snapshot, expectedStatus: "searching_driver" })),
+    ...offeredSnapshot.docs.map((snapshot) => ({ snapshot, expectedStatus: "offered" })),
+    ...dispatchingSnapshot.docs.map((snapshot) => ({ snapshot, expectedStatus: "dispatching" })),
+  ];
+
+  for (const { snapshot: staleSnapshot, expectedStatus } of staleRides) {
+    const rideRef = staleSnapshot.ref;
+    try {
+      let ride;
+      await db.runTransaction(async (transaction) => {
+        ride = undefined;
+        const currentSnapshot = await transaction.get(rideRef);
+        if (!currentSnapshot.exists) return;
+        const currentRide = currentSnapshot.data();
+        if (currentRide.status !== expectedStatus ||
+            currentRide.paymentStatus !== "succeeded" ||
+            currentRide.driverUid ||
+            currentRide.updatedAt.toMillis() > cutoff.toMillis()) return;
+
+        const offerRefs = expectedStatus === "offered"
+          ? (currentRide.offeredDriverUids ?? []).map((uid) =>
+            db.collection("drivers").doc(uid).collection("offers").doc(rideRef.id))
+          : [];
+        const offers = await Promise.all(offerRefs.map((ref) => transaction.get(ref)));
+        offers.forEach((offer) => {
+          if (offer.exists && offer.data().status === "pending") {
+            transaction.update(offer.ref, {
+              status: "expired",
+              updatedAt: FieldValue.serverTimestamp(),
+            });
+          }
+        });
+        transaction.update(rideRef, {
+          status: "dispatching",
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        ride = currentRide;
+      });
+      if (ride) await createDriverOffers(rideRef.id, ride);
+    } catch (error) {
+      logger.error("Ride redispatch failed", { rideId: rideRef.id, error: error.message });
+    }
+  }
 });
 
 exports.stripeWebhook = onRequest({

@@ -348,13 +348,28 @@ struct ContentView: View {
                                 ride: ride,
                                 fare: quote?.formattedAmount,
                                 detail: quote.map {
-                                    "\($0.distanceKm.formatted(.number.precision(.fractionLength(1)))) km · upfront price"
+                                    "\($0.distanceKm.formatted(.number.precision(.fractionLength(1)))) estimated km"
                                 } ?? "Waiting for quote",
                                 isSelected: ride == selectedRide
                             ) {
                                 selectedRide = ride
                             }
                         }
+                    }
+                    if let quote = rideStore.quotes[selectedRide.id] {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Estimated fare breakdown")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(TrypsStyle.ink)
+                            Text(quote.formattedFareBreakdown)
+                                .font(.caption)
+                                .foregroundStyle(TrypsStyle.muted)
+                            Text("Modeled distance estimate; actual routes and fares may vary.")
+                                .font(.caption2)
+                                .foregroundStyle(TrypsStyle.muted)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 4)
                     }
 
                     if let rideID = rideStore.rideId {
@@ -803,6 +818,7 @@ final class PickupLocationManager: NSObject, ObservableObject, CLLocationManager
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBest
+        manager.distanceFilter = 100
         authorizationStatus = manager.authorizationStatus
     }
 
@@ -819,6 +835,23 @@ final class PickupLocationManager: NSObject, ObservableObject, CLLocationManager
         @unknown default:
             pickupLabel = "Location unavailable"
         }
+    }
+
+    func startUpdatingLocation() {
+        switch manager.authorizationStatus {
+        case .authorizedAlways, .authorizedWhenInUse:
+            manager.startUpdatingLocation()
+        case .notDetermined:
+            manager.requestWhenInUseAuthorization()
+        case .denied, .restricted:
+            pickupLabel = "Location access needed"
+        @unknown default:
+            pickupLabel = "Location unavailable"
+        }
+    }
+
+    func stopUpdatingLocation() {
+        manager.stopUpdatingLocation()
     }
 
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {

@@ -11,9 +11,23 @@ struct RideQuote: Identifiable {
     let amountCents: Int
     let currency: String
     let distanceKm: Double
+    let baseFareCents: Int
+    let distanceFareCents: Int
+    let bookingFeeCents: Int
+    let minimumFareAdjustmentCents: Int
 
     var formattedAmount: String {
         (Double(amountCents) / 100).formatted(.currency(code: currency.uppercased()))
+    }
+
+    var formattedFareBreakdown: String {
+        let base = (Double(baseFareCents) / 100).formatted(.currency(code: currency.uppercased()))
+        let distance = (Double(distanceFareCents) / 100).formatted(.currency(code: currency.uppercased()))
+        let booking = (Double(bookingFeeCents) / 100).formatted(.currency(code: currency.uppercased()))
+        let minimum = minimumFareAdjustmentCents > 0
+            ? " · minimum fare adjustment \((Double(minimumFareAdjustmentCents) / 100).formatted(.currency(code: currency.uppercased())))"
+            : ""
+        return "\(base) base + \(distance) distance + \(booking) booking fee\(minimum)"
     }
 }
 
@@ -57,7 +71,11 @@ final class FirebaseRideStore: ObservableObject {
                       let label = result["rideLabel"] as? String,
                       let amount = result["amountCents"] as? Int,
                       let currency = result["currency"] as? String,
-                      let distanceKm = result["distanceKm"] as? Double else {
+                      let distanceKm = result["distanceKm"] as? Double,
+                      let baseFare = result["baseFareCents"] as? Int,
+                      let distanceFare = result["distanceFareCents"] as? Int,
+                      let bookingFee = result["bookingFeeCents"] as? Int,
+                      let minimumFareAdjustment = result["minimumFareAdjustmentCents"] as? Int else {
                     throw RideServiceError.invalidResponse
                 }
                 quotes[rideType] = RideQuote(
@@ -66,7 +84,11 @@ final class FirebaseRideStore: ObservableObject {
                     rideLabel: label,
                     amountCents: amount,
                     currency: currency,
-                    distanceKm: distanceKm
+                    distanceKm: distanceKm,
+                    baseFareCents: baseFare,
+                    distanceFareCents: distanceFare,
+                    bookingFeeCents: bookingFee,
+                    minimumFareAdjustmentCents: minimumFareAdjustment
                 )
             }
         } catch {
@@ -298,9 +320,20 @@ struct RideQuote: Identifiable {
     let amountCents: Int
     let currency: String
     let distanceKm: Double
+    let baseFareCents: Int
+    let distanceFareCents: Int
+    let bookingFeeCents: Int
+    let minimumFareAdjustmentCents: Int
 
     var formattedAmount: String {
         (Double(amountCents) / 100).formatted(.currency(code: currency.uppercased()))
+    }
+
+    var formattedFareBreakdown: String {
+        let base = (Double(baseFareCents) / 100).formatted(.currency(code: currency.uppercased()))
+        let distance = (Double(distanceFareCents) / 100).formatted(.currency(code: currency.uppercased()))
+        let booking = (Double(bookingFeeCents) / 100).formatted(.currency(code: currency.uppercased()))
+        return "\(base) base + \(distance) distance + \(booking) booking fee"
     }
 }
 

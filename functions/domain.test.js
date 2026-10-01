@@ -2,11 +2,14 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const { geohashForLocation, geohashQueryBounds } = require("geofire-common");
 
 const {
   calculateQuote,
   canTransitionRide,
   distanceInKilometers,
+  isFreshDriverLocation,
+  rankNearbyDrivers,
   validCoordinate,
 } = require("./domain");
 
@@ -25,10 +28,88 @@ test("calculates a server-owned fare quote for a supported ride", () => {
   );
   assert.equal(quote.rideType, "everyday");
   assert.equal(quote.currency, "usd");
-  assert.ok(quote.amountCents > 800);
-  assert.ok(quote.amountCents % 50 === 0);
+  assert.equal(quote.pricingVersion, 1);
+  assert.ok(quote.distanceKm > quote.straightLineDistanceKm);
+  assert.equal(
+    quote.amountCents,
+    quote.baseFareCents + quote.distanceFareCents +
+      quote.bookingFeeCents + quote.minimumFareAdjustmentCents
+  );
+  assert.ok(quote.amountCents >= 1100);
+  assert.equal(quote.bookingFeeCents, 200);
+  assert.ok(quote.distanceFareCents > 0);
   assert.throws(() => calculateQuote({ latitude: 0, longitude: 0 }, { latitude: 0, longitude: 0 }, "everyday"), RangeError);
   assert.throws(() => calculateQuote({ latitude: 0, longitude: 0 }, { latitude: 1, longitude: 1 }, "luxury"), TypeError);
+  assert.throws(
+    () => calculateQuote({ latitude: 0, longitude: 0 }, { latitude: 0, longitude: 2 }, "everyday"),
+    RangeError
+  );
+  const shortTrip = calculateQuote(
+    { latitude: 37.7749, longitude: -122.4194 },
+    { latitude: 37.7755, longitude: -122.4194 },
+    "everyday"
+  );
+  assert.equal(shortTrip.amountCents, 1100);
+  assert.ok(shortTrip.minimumFareAdjustmentCents > 0);
+});
+
+test("matches only verified, available, recently located drivers within radius", () => {
+  const now = 1_800_000_000_000;
+  const pickup = { latitude: 37.7749, longitude: -122.4194 };
+  const drivers = [
+    {
+      uid: "near",
+      available: true,
+      verified: true,
+      location: { latitude: 37.78, longitude: -122.42 },
+      locationUpdatedAtMillis: now - 30_000,
+    },
+    {
+      uid: "far",
+      available: true,
+      verified: true,
+      location: { latitude: 38, longitude: -122.42 },
+      locationUpdatedAtMillis: now,
+    },
+    {
+      uid: "stale",
+      available: true,
+      verified: true,
+      location: pickup,
+      locationUpdatedAtMillis: now - 121_000,
+    },
+    {
+      uid: "offline",
+      available: false,
+      verified: true,
+      location: pickup,
+      locationUpdatedAtMillis: now,
+    },
+    {
+      uid: "unverified",
+      available: true,
+      verified: false,
+      location: pickup,
+      locationUpdatedAtMillis: now,
+    },
+  ];
+  assert.deepEqual(
+    rankNearbyDrivers(drivers, pickup, 15, now).map((driver) => driver.uid),
+    ["near"]
+  );
+  assert.equal(isFreshDriverLocation(now + 20_000, now), true);
+  assert.equal(isFreshDriverLocation(now + 31_000, now), false);
+});
+
+test("geohash search bounds include nearby drivers and exclude distant regions", () => {
+  const pickup = [37.7749, -122.4194];
+  const bounds = geohashQueryBounds(pickup, 15_000);
+  const isInBounds = (location) => {
+    const geohash = geohashForLocation(location);
+    return bounds.some(([start, end]) => geohash >= start && geohash <= end);
+  };
+  assert.equal(isInBounds([37.78, -122.42]), true);
+  assert.equal(isInBounds([38.2, -122.42]), false);
 });
 
 test("distance is symmetric and driver trip statuses only move forward", () => {

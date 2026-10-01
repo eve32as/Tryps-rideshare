@@ -99,6 +99,11 @@ private final class FirebaseDriverStore: ObservableObject {
     }
 
     func stop() {
+        if isAvailable {
+            Task {
+                _ = try? await call("setDriverAvailability", data: ["available": false])
+            }
+        }
         offerListener?.remove()
         applicationListener?.remove()
         driverListener?.remove()
@@ -151,6 +156,16 @@ private final class FirebaseDriverStore: ObservableObject {
             isAvailable = available
         } catch {
             errorMessage = "Couldn’t update driver availability."
+        }
+    }
+
+    func updateLocation(_ location: CLLocationCoordinate2D) async {
+        do {
+            _ = try await call("updateDriverLocation", data: [
+                "location": ["latitude": location.latitude, "longitude": location.longitude],
+            ])
+        } catch {
+            errorMessage = "Couldn’t refresh your location. Ride offers may pause."
         }
     }
 
@@ -270,6 +285,21 @@ struct FirebaseDriverView: View {
                 driver.stop()
             }
         }
+        .task(id: driver.isAvailable) {
+            guard driver.isAvailable else {
+                locationManager.stopUpdatingLocation()
+                return
+            }
+            locationManager.startUpdatingLocation()
+            while !Task.isCancelled {
+                if let location = locationManager.location,
+                   abs(Date().timeIntervalSince(location.timestamp)) <= 120 {
+                    await driver.updateLocation(location.coordinate)
+                }
+                try? await Task.sleep(for: .seconds(60))
+            }
+            locationManager.stopUpdatingLocation()
+        }
         .onDisappear {
             driver.stop()
         }
@@ -333,14 +363,17 @@ struct FirebaseDriverView: View {
                 }
                 Spacer()
                 Button {
-                    if !driver.isAvailable && locationManager.location == nil {
+                    let currentLocation = locationManager.location.flatMap {
+                        abs(Date().timeIntervalSince($0.timestamp)) <= 60 ? $0.coordinate : nil
+                    }
+                    if !driver.isAvailable && currentLocation == nil {
                         locationManager.requestLocation()
                         driver.errorMessage = "Fetching location. Tap Go online again when your pickup is visible."
                     } else {
                         Task {
                             await driver.setAvailability(
                                 !driver.isAvailable,
-                                location: driver.isAvailable ? nil : locationManager.location?.coordinate
+                                location: driver.isAvailable ? nil : currentLocation
                             )
                         }
                     }
