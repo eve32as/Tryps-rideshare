@@ -5,6 +5,20 @@ ALTER TABLE rides
     ADD COLUMN IF NOT EXISTS share_token_hash TEXT,
     ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
 
+UPDATE rides
+SET payment_created_at = created_at
+WHERE status = 'awaiting_payment'
+  AND payment_intent_id IS NOT NULL
+  AND payment_created_at IS NULL;
+
+ALTER TABLE drivers
+    ADD COLUMN IF NOT EXISTS location_updated_at TIMESTAMPTZ;
+
+UPDATE drivers
+SET location_updated_at = updated_at
+WHERE location IS NOT NULL
+  AND location_updated_at IS NULL;
+
 ALTER TABLE rides DROP CONSTRAINT IF EXISTS rides_status_check;
 ALTER TABLE rides
     ADD CONSTRAINT rides_status_check

@@ -294,7 +294,10 @@ app.put("/v1/driver/location", authenticate, requireRole("driver"), asyncRoute(a
     return res.status(400).json({ error: "A valid driver location is required." });
   }
   const result = await pool.query(
-    `UPDATE drivers SET location = ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography, updated_at = now()
+    `UPDATE drivers
+     SET location = ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography,
+         location_updated_at = now(),
+         updated_at = now()
      WHERE user_id = $1 RETURNING user_id`,
     [req.user.id, longitude, latitude],
   );
@@ -412,7 +415,7 @@ app.post("/v1/rides", authenticate, requireRole("rider"), asyncRoute(async (req,
        FROM drivers
        WHERE available = true
          AND location IS NOT NULL
-         AND updated_at > now() - ($4::double precision * interval '1 second')
+         AND location_updated_at > now() - ($4::double precision * interval '1 second')
          AND ST_DWithin(
            location,
            ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
@@ -492,19 +495,20 @@ app.post("/v1/rides", authenticate, requireRole("rider"), asyncRoute(async (req,
 }));
 
 app.delete("/v1/rides/:rideId", authenticate, requireRole("rider"), asyncRoute(async (req, res) => {
+  const scheduledCancellation = await pool.query(
+    `UPDATE rides SET status = 'cancelled'
+     WHERE id = $1 AND rider_user_id = $2 AND status = 'scheduled'
+     RETURNING id`,
+    [req.params.rideId, req.user.id],
+  );
+  if (scheduledCancellation.rowCount) return res.json({ cancelled: true });
+
   const result = await pool.query(
-    `SELECT payment_intent_id, status FROM rides
-     WHERE id = $1 AND rider_user_id = $2 AND status IN ('scheduled', 'awaiting_payment')`,
+    `SELECT payment_intent_id FROM rides
+     WHERE id = $1 AND rider_user_id = $2 AND status = 'awaiting_payment'`,
     [req.params.rideId, req.user.id],
   );
   if (!result.rowCount) return res.status(404).json({ error: "Pending ride not found." });
-  if (result.rows[0].status === "scheduled") {
-    await pool.query(
-      "UPDATE rides SET status = 'cancelled' WHERE id = $1 AND rider_user_id = $2 AND status = 'scheduled'",
-      [req.params.rideId, req.user.id],
-    );
-    return res.json({ cancelled: true });
-  }
   try {
     await stripe.paymentIntents.cancel(result.rows[0].payment_intent_id);
   } catch {
@@ -671,7 +675,7 @@ async function dispatchScheduledRides() {
          FROM drivers d
          WHERE available = true
            AND location IS NOT NULL
-           AND updated_at > now() - ($4::double precision * interval '1 second')
+           AND location_updated_at > now() - ($4::double precision * interval '1 second')
            AND NOT EXISTS (
              SELECT 1 FROM rides r
              WHERE r.driver_user_id = d.user_id AND r.status IN ('awaiting_payment', 'confirmed')
