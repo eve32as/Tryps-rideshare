@@ -4,6 +4,7 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.functions.FirebaseFunctions
 import com.tryps.domain.AccountRepository
 import com.tryps.domain.RideRepository
@@ -17,7 +18,6 @@ import com.tryps.model.UserRole
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 
@@ -26,18 +26,26 @@ class FirebaseAccountRepository(
     private val firestore: FirebaseFirestore,
 ) : AccountRepository {
     override val currentUser: Flow<UserProfile?> = callbackFlow {
+        var profileListener: ListenerRegistration? = null
         val listener = FirebaseAuth.AuthStateListener { source ->
+            profileListener?.remove()
+            profileListener = null
             val firebaseUser = source.currentUser
             if (firebaseUser == null) {
                 trySend(null)
             } else {
-                firestore.collection("users").document(firebaseUser.uid).get()
-                    .addOnSuccessListener { trySend(it.toProfile(firebaseUser.email.orEmpty())) }
-                    .addOnFailureListener { close(it) }
+                profileListener = firestore.collection("users").document(firebaseUser.uid)
+                    .addSnapshotListener { snapshot, error ->
+                        if (error != null) close(error)
+                        else if (snapshot?.exists() == true) trySend(snapshot.toProfile(firebaseUser.email.orEmpty()))
+                    }
             }
         }
         auth.addAuthStateListener(listener)
-        awaitClose { auth.removeAuthStateListener(listener) }
+        awaitClose {
+            profileListener?.remove()
+            auth.removeAuthStateListener(listener)
+        }
     }
 
     override suspend fun signIn(email: String, password: String) {
@@ -89,11 +97,11 @@ class FirebaseRideRepository(
     }
 
     override fun observeActiveRide(userId: String, role: UserRole): Flow<Ride?> =
-        combine(rides, observeDriverLocations()) { current, locations ->
+        rides.map { current ->
             current.firstOrNull {
                 (if (role == UserRole.RIDER) it.riderId == userId else it.driverId == userId) &&
                     it.status !in setOf(RideStatus.COMPLETED, RideStatus.CANCELLED)
-            }?.let { ride -> ride.copy(driverLocation = ride.driverId?.let(locations::get)) }
+            }
         }
 
     override fun observeHistory(userId: String, role: UserRole): Flow<List<Ride>> = rides.map { current ->
@@ -151,6 +159,10 @@ class FirebaseRideRepository(
         firestore.collection("drivers").document(driverId).set(
             mapOf("location" to location.toMap(), "available" to available, "updatedAt" to FieldValue.serverTimestamp()),
         ).await()
+        val activeRides = firestore.collection("rides").whereEqualTo("driverId", driverId).get().await()
+        activeRides.documents
+            .filter { enumValueOrDefault(it.getString("status"), RideStatus.COMPLETED) !in setOf(RideStatus.COMPLETED, RideStatus.CANCELLED) }
+            .forEach { it.reference.update("driverLocation", location.toMap()).await() }
     }
 
     override suspend fun cancel(rideId: String) = updateStatus(rideId, RideStatus.CANCELLED)
@@ -159,12 +171,6 @@ class FirebaseRideRepository(
         firestore.collection("rides").document(rideId).update("rating", rating.coerceIn(1, 5)).await()
     }
 
-    private fun observeDriverLocations(): Flow<Map<String, GeoPoint>> = callbackFlow {
-        val listener = firestore.collection("drivers").addSnapshotListener { snapshot, error ->
-            if (error != null) close(error) else trySend(snapshot?.documents.orEmpty().associate { it.id to it.get("location").toGeoPoint() })
-        }
-        awaitClose { listener.remove() }
-    }
 }
 
 private fun DocumentSnapshot.toProfile(fallbackEmail: String) = UserProfile(
@@ -184,6 +190,7 @@ private fun DocumentSnapshot.toRide(): Ride? = runCatching {
         driverId = getString("driverId"),
         riderName = getString("riderName").orEmpty(),
         driverName = getString("driverName").orEmpty(),
+        driverLocation = get("driverLocation")?.toGeoPoint(),
         pickup = get("pickup").toPlace(),
         destination = get("destination").toPlace(),
         quote = get("quote").toQuote(),

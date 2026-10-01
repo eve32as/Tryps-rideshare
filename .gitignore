@@ -9,6 +9,8 @@ google-services.json
 *.jks
 *.keystore
 .idea/
+node_modules/
+npm-debug.log*
 
 # Ignore Kotlin plugin data
 .kotlin

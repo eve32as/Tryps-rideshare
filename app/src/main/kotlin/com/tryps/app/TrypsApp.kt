@@ -278,6 +278,7 @@ private fun ActiveRideScreen(ride: Ride, driver: Boolean, viewModel: MainViewMod
 private fun RouteMap(pickup: Place?, destination: Place?, current: GeoPoint?, modifier: Modifier = Modifier) {
     val initial = pickup?.location ?: current ?: GeoPoint(37.7749, -122.4194)
     val camera = rememberCameraPositionState()
+    val routeColor = MaterialTheme.colorScheme.primary
     LaunchedEffect(initial) {
         camera.move(CameraUpdateFactory.newLatLngZoom(initial.toLatLng(), 12f))
     }
@@ -286,7 +287,7 @@ private fun RouteMap(pickup: Place?, destination: Place?, current: GeoPoint?, mo
         destination?.let { Marker(MarkerState(it.location.toLatLng()), title = "Destination", snippet = it.address) }
         current?.let { Marker(MarkerState(it.toLatLng()), title = "Current location") }
         if (pickup != null && destination != null) {
-            Polyline(listOf(pickup.location.toLatLng(), destination.location.toLatLng()), color = MaterialTheme.colorScheme.primary)
+            Polyline(listOf(pickup.location.toLatLng(), destination.location.toLatLng()), color = routeColor)
         }
     }
 }
@@ -318,7 +319,7 @@ private fun AccountScreen(state: MainUiState, viewModel: MainViewModel) {
         Text(state.user?.displayName.orEmpty(), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Text(state.user?.email.orEmpty())
         Text(state.user?.role?.name.orEmpty())
-        if (state.user?.vehicle?.isNotBlank() == true) Text(state.user.vehicle)
+        if (state.user?.vehicle?.isNotBlank() == true) Text(state.user?.vehicle.orEmpty())
         Text("★ ${state.user?.rating ?: 5.0}")
         Spacer(Modifier.height(24.dp))
         OutlinedButton(viewModel::signOut) { Text("Sign out") }
