@@ -94,10 +94,21 @@ test("calculates server-side estimated fares and rejects unsupported ride types 
   const estimate = calculateRideFare(pickup, destination, "tryps-go", pricing);
   assert.ok(estimate.amountCents > pricing.minimumCents);
   assert.ok(estimate.estimatedDistanceKm > 1);
+  assert.equal(estimate.amountCents, estimate.baseFareCents + estimate.distanceChargeCents);
+  assert.equal(estimate.distanceChargeCents, Math.round(estimate.estimatedDistanceKm * estimate.perKmCents));
+  assert.equal(estimate.minimumApplied, false);
   assert.equal(
     calculateRideFare(pickup, destination, "tryps-xl", pricing).amountCents,
     Math.round(estimate.amountCents * 1.8),
   );
+  const minimumFare = calculateRideFare(
+    pickup,
+    pickup,
+    "tryps-go",
+    { ...pricing, minimumCents: 1000 },
+  );
+  assert.equal(minimumFare.amountCents, 1000);
+  assert.equal(minimumFare.minimumApplied, true);
   assert.equal(calculateRideFare(pickup, destination, "unknown", pricing), undefined);
   assert.equal(calculateRideFare(pickup, { latitude: 0, longitude: 0 }, "tryps-go", pricing), undefined);
   assert.equal(calculateRideFare(pickup, destination, "toString", pricing), undefined);

@@ -164,10 +164,19 @@ struct FareEstimate: Decodable {
     let amountCents: Int
     let estimatedDistanceKm: Double
     let currency: String
+    let baseFareCents: Int
+    let distanceChargeCents: Int
+    let perKmCents: Int
+    let rideTypeMultiplier: Double
+    let minimumFareCents: Int
+    let minimumApplied: Bool
 
     var formattedFare: String {
-        let amount = Double(amountCents) / 100
-        return amount.formatted(.currency(code: currency.uppercased()))
+        formatted(amountCents)
+    }
+
+    func formatted(_ cents: Int) -> String {
+        (Double(cents) / 100).formatted(.currency(code: currency.uppercased()))
     }
 }
 

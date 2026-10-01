@@ -439,6 +439,34 @@ struct ContentView: View {
                 Text("Approx. \(selectedFare.estimatedDistanceKm.formatted(.number.precision(.fractionLength(1)))) km · estimated fare")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(TrypsStyle.muted)
+
+                DisclosureGroup {
+                    VStack(alignment: .leading, spacing: 8) {
+                        fareBreakdownRow("Base fare", value: selectedFare.formatted(selectedFare.baseFareCents))
+                        fareBreakdownRow(
+                            "Distance (\(selectedFare.estimatedDistanceKm.formatted(.number.precision(.fractionLength(1)))) km × \(selectedFare.formatted(selectedFare.perKmCents))/km)",
+                            value: selectedFare.formatted(selectedFare.distanceChargeCents)
+                        )
+                        fareBreakdownRow(
+                            "Ride category",
+                            value: "\(selectedFare.rideTypeMultiplier.formatted(.number.precision(.fractionLength(2))))×"
+                        )
+                        if selectedFare.minimumApplied {
+                            fareBreakdownRow("Minimum fare applied", value: selectedFare.formatted(selectedFare.minimumFareCents))
+                        }
+                        Divider()
+                        fareBreakdownRow("Estimated total", value: selectedFare.formattedFare, emphasized: true)
+                        Text("Distance is a straight-line estimate, not road routing. Your final fare may differ.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(TrypsStyle.muted)
+                    }
+                    .padding(.top, 8)
+                } label: {
+                    Text("Fare details")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(TrypsStyle.ink)
+                }
+                .tint(TrypsStyle.accent)
             }
 
             Toggle("Schedule this ride", isOn: $scheduleForLater)
@@ -455,6 +483,17 @@ struct ContentView: View {
                 .tint(TrypsStyle.accent)
             }
         }
+    }
+
+    private func fareBreakdownRow(_ title: String, value: String, emphasized: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title)
+                .foregroundStyle(emphasized ? TrypsStyle.ink : TrypsStyle.muted)
+            Spacer(minLength: 12)
+            Text(value)
+                .foregroundStyle(TrypsStyle.ink)
+        }
+        .font(.system(size: 12, weight: emphasized ? .bold : .medium))
     }
 
     private var activityScreen: some View {

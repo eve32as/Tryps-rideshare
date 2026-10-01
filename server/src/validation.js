@@ -33,11 +33,21 @@ export function calculateRideFare(pickup, destination, rideType, pricing) {
       Math.cos(startLatitude) * Math.cos(endLatitude) * Math.sin(longitudeDelta / 2) ** 2,
   ));
   const straightLineMeters = 6_371_000 * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
-  const estimatedDistanceKm = Math.max(1, straightLineMeters / 1000 * pricing.distanceMultiplier);
+  const estimatedDistanceKm = Math.round(
+    Math.max(1, straightLineMeters / 1000 * pricing.distanceMultiplier) * 10,
+  ) / 10;
   if (estimatedDistanceKm > 500) return undefined;
-  const amountCents = Math.max(
-    pricing.minimumCents,
-    Math.round((pricing.baseCents + estimatedDistanceKm * pricing.perKmCents) * rideTypeMultiplier),
-  );
-  return { amountCents, estimatedDistanceKm: Math.round(estimatedDistanceKm * 10) / 10 };
+  const distanceChargeCents = Math.round(estimatedDistanceKm * pricing.perKmCents);
+  const subtotalCents = Math.round((pricing.baseCents + distanceChargeCents) * rideTypeMultiplier);
+  const amountCents = Math.max(pricing.minimumCents, subtotalCents);
+  return {
+    amountCents,
+    estimatedDistanceKm,
+    baseFareCents: pricing.baseCents,
+    distanceChargeCents,
+    perKmCents: pricing.perKmCents,
+    rideTypeMultiplier,
+    minimumFareCents: pricing.minimumCents,
+    minimumApplied: amountCents > subtotalCents,
+  };
 }
