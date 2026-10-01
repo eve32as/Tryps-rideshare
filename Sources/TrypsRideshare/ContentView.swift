@@ -11,6 +11,12 @@ private enum TrypsStyle {
     static let line = Color(red: 0.91, green: 0.93, blue: 0.92)
 }
 
+private enum TrypsCurrency {
+    static func format(_ amount: Int) -> String {
+        amount.formatted(.currency(code: "USD").precision(.fractionLength(0)))
+    }
+}
+
 private struct Destination: Identifiable {
     let id: String
     let name: String
@@ -94,10 +100,13 @@ struct ContentView: View {
     }
 
     private var routeRequestID: String {
-        guard let pickupCoordinate else { return "no-pickup-\(destination.id)" }
-        let latitude = (pickupCoordinate.latitude * 10_000).rounded() / 10_000
-        let longitude = (pickupCoordinate.longitude * 10_000).rounded() / 10_000
-        return "\(latitude),\(longitude)-\(destination.id)"
+        let destinationID = "\(destination.id)-\(rounded(destination.coordinate.latitude)),\(rounded(destination.coordinate.longitude))"
+        guard let pickupCoordinate else { return "no-pickup-\(destinationID)" }
+        return "\(rounded(pickupCoordinate.latitude)),\(rounded(pickupCoordinate.longitude))-\(destinationID)"
+    }
+
+    private func rounded(_ coordinate: CLLocationDegrees) -> CLLocationDegrees {
+        (coordinate * 10_000).rounded() / 10_000
     }
 
     var body: some View {
@@ -153,7 +162,7 @@ struct ContentView: View {
         .alert("Your ride is on its way", isPresented: $isRideRequested) {
             Button("Done", role: .cancel) { }
         } message: {
-            Text("\(selectedRide.name) to \(destination.name) · about \(fare(for: selectedRide)) dollars")
+            Text("\(selectedRide.name) to \(destination.name) · about \(TrypsCurrency.format(fare(for: selectedRide)))")
         }
     }
 
@@ -170,6 +179,12 @@ struct ContentView: View {
         guard let pickupCoordinate else {
             route = nil
             routeError = nil
+            cameraPosition = .region(
+                MKCoordinateRegion(
+                    center: destination.coordinate,
+                    span: MKCoordinateSpan(latitudeDelta: 0.035, longitudeDelta: 0.035)
+                )
+            )
             return
         }
         guard CLLocationCoordinate2DIsValid(pickupCoordinate),
@@ -344,7 +359,7 @@ struct ContentView: View {
                     Text("Confirm \(selectedRide.name)")
                         .font(.system(size: 16, weight: .bold))
                     Spacer()
-                    Text("$\(fare(for: selectedRide))")
+                    Text(TrypsCurrency.format(fare(for: selectedRide)))
                         .font(.system(size: 16, weight: .bold))
                     Image(systemName: "arrow.right")
                         .font(.system(size: 13, weight: .bold))
@@ -487,7 +502,7 @@ private struct RideOptionRow: View {
 
                 Spacer()
 
-                Text("$\(fare)")
+                Text(TrypsCurrency.format(fare))
                     .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(TrypsStyle.ink)
 
@@ -505,7 +520,7 @@ private struct RideOptionRow: View {
             .contentShape(RoundedRectangle(cornerRadius: 15))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(ride.name), \(ride.detail), \(ride.seats) seats, \(fare) dollars")
+        .accessibilityLabel("\(ride.name), \(ride.detail), \(ride.seats) seats, \(TrypsCurrency.format(fare))")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
@@ -692,6 +707,8 @@ private final class PickupLocationManager: NSObject, ObservableObject, CLLocatio
     }
 
     func requestLocation() {
+        location = nil
+        pickupLabel = "Finding your location…"
         switch manager.authorizationStatus {
         case .authorizedAlways, .authorizedWhenInUse:
             pickupLabel = "Finding your location…"
