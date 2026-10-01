@@ -55,3 +55,11 @@ CREATE TABLE IF NOT EXISTS saved_places (
 );
 
 CREATE INDEX IF NOT EXISTS saved_places_user_idx ON saved_places (user_id, created_at);
+
+CREATE TABLE IF NOT EXISTS notification_devices (
+    user_id TEXT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    device_token TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, device_token),
+    UNIQUE (device_token)
+);

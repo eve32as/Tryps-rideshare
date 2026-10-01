@@ -42,6 +42,24 @@ export function readConfig(env = process.env) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error("PORT must be a valid TCP port.");
   }
+  const apnsValues = ["APNS_KEY_ID", "APNS_TEAM_ID", "APNS_PRIVATE_KEY", "APNS_HOST"];
+  const configuredApnsValues = apnsValues.filter((name) => env[name]);
+  if (configuredApnsValues.length > 0 && configuredApnsValues.length !== apnsValues.length) {
+    throw new Error("Configure all APNS_KEY_ID, APNS_TEAM_ID, APNS_PRIVATE_KEY, and APNS_HOST values together.");
+  }
+  if (env.APNS_HOST && !["api.push.apple.com", "api.sandbox.push.apple.com"].includes(env.APNS_HOST)) {
+    throw new Error("APNS_HOST must be an Apple production or sandbox endpoint.");
+  }
+
+  const fareBaseCents = Number(env.FARE_BASE_CENTS ?? 300);
+  const farePerKmCents = Number(env.FARE_PER_KM_CENTS ?? 150);
+  const fareMinimumCents = Number(env.FARE_MINIMUM_CENTS ?? 500);
+  const fareDistanceMultiplier = Number(env.FARE_DISTANCE_MULTIPLIER ?? 1.35);
+  if (![fareBaseCents, farePerKmCents, fareMinimumCents].every((amount) =>
+    Number.isSafeInteger(amount) && amount > 0) ||
+    !Number.isFinite(fareDistanceMultiplier) || fareDistanceMultiplier < 1 || fareDistanceMultiplier > 3) {
+    throw new Error("Fare configuration must use positive cent amounts and a distance multiplier between 1 and 3.");
+  }
 
   return {
     databaseUrl: env.DATABASE_URL,
@@ -53,11 +71,23 @@ export function readConfig(env = process.env) {
     driverOnboardingReturnUrl: env.DRIVER_ONBOARDING_RETURN_URL,
     driverOnboardingRefreshUrl: env.DRIVER_ONBOARDING_REFRESH_URL,
     tripShareBaseUrl: env.TRIP_SHARE_BASE_URL.replace(/\/+$/, ""),
+    apns: env.APNS_HOST ? {
+      keyId: env.APNS_KEY_ID,
+      teamId: env.APNS_TEAM_ID,
+      privateKey: env.APNS_PRIVATE_KEY.replace(/\\n/g, "\n"),
+      host: env.APNS_HOST,
+    } : null,
     port,
-    ridePrices: {
-      "tryps-go": 1250,
-      "tryps-comfort": 1820,
-      "tryps-xl": 2480,
+    farePricing: {
+      baseCents: fareBaseCents,
+      perKmCents: farePerKmCents,
+      minimumCents: fareMinimumCents,
+      distanceMultiplier: fareDistanceMultiplier,
+      rideTypeMultipliers: {
+        "tryps-go": 1,
+        "tryps-comfort": 1.4,
+        "tryps-xl": 1.8,
+      },
     },
     applicationFeeBasisPoints,
     matchingRadiusMeters: 10000,

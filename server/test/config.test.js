@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readConfig } from "../src/config.js";
-import { getRidePrice, isValidLocation } from "../src/validation.js";
+import { calculateRideFare, isValidLocation } from "../src/validation.js";
 
 const validEnvironment = {
   DATABASE_URL: "postgres://localhost/tryps",
@@ -81,8 +81,44 @@ test("accepts valid pickup coordinates and rejects out-of-range values", () => {
   }), false);
 });
 
-test("only allows server-priced ride types", () => {
-  const prices = { "tryps-go": 1250, "tryps-comfort": 1820 };
-  assert.equal(getRidePrice("tryps-go", prices), 1250);
-  assert.equal(getRidePrice("not-a-ride", prices), undefined);
+test("calculates server-side estimated fares and rejects unsupported ride types or distances", () => {
+  const pricing = {
+    baseCents: 300,
+    perKmCents: 150,
+    minimumCents: 500,
+    distanceMultiplier: 1.35,
+    rideTypeMultipliers: { "tryps-go": 1, "tryps-comfort": 1.4, "tryps-xl": 1.8 },
+  };
+  const pickup = { latitude: 37.7793, longitude: -122.4193 };
+  const destination = { latitude: 37.7893, longitude: -122.4193 };
+  const estimate = calculateRideFare(pickup, destination, "tryps-go", pricing);
+  assert.ok(estimate.amountCents > pricing.minimumCents);
+  assert.ok(estimate.estimatedDistanceKm > 1);
+  assert.equal(
+    calculateRideFare(pickup, destination, "tryps-xl", pricing).amountCents,
+    Math.round(estimate.amountCents * 1.8),
+  );
+  assert.equal(calculateRideFare(pickup, destination, "unknown", pricing), undefined);
+  assert.equal(calculateRideFare(pickup, { latitude: 0, longitude: 0 }, "tryps-go", pricing), undefined);
+});
+
+test("validates fare configuration and optional APNs settings", () => {
+  assert.throws(
+    () => readConfig({ ...validEnvironment, FARE_PER_KM_CENTS: "-1" }),
+    /positive cent amounts/,
+  );
+  assert.throws(
+    () => readConfig({ ...validEnvironment, APNS_KEY_ID: "key-id" }),
+    /Configure all APNS_KEY_ID/,
+  );
+  assert.throws(
+    () => readConfig({
+      ...validEnvironment,
+      APNS_KEY_ID: "key-id",
+      APNS_TEAM_ID: "team-id",
+      APNS_PRIVATE_KEY: "key",
+      APNS_HOST: "example.com",
+    }),
+    /Apple production or sandbox/,
+  );
 });

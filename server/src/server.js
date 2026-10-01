@@ -5,7 +5,7 @@ import Stripe from "stripe";
 import { createRemoteJWKSet, jwtVerify, SignJWT } from "jose";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readConfig } from "./config.js";
-import { getRidePrice, isValidLocation } from "./validation.js";
+import { calculateRideFare, isValidLocation } from "./validation.js";
 
 const config = readConfig();
 const { Pool } = pg;
@@ -130,6 +130,16 @@ function requireRole(role) {
 }
 
 app.get("/v1/health", (_req, res) => res.json({ status: "ok" }));
+
+app.post("/v1/fare-estimate", authenticate, requireRole("rider"), asyncRoute(async (req, res) => {
+  const { pickup, destination, rideType } = req.body ?? {};
+  if (!validateLocationPair(req.body)) {
+    return res.status(400).json({ error: "Valid pickup and destination are required." });
+  }
+  const estimate = calculateRideFare(pickup, destination, rideType, config.farePricing);
+  if (!estimate) return res.status(400).json({ error: "This ride type or trip distance is not supported." });
+  return res.json({ ...estimate, currency: config.currency });
+}));
 
 app.get("/v1/shared-trips/:token", asyncRoute(async (req, res) => {
   const token = req.params.token;
@@ -360,10 +370,12 @@ app.post("/v1/driver/rides/:rideId/complete", authenticate, requireRole("driver"
 
 app.post("/v1/rides", authenticate, requireRole("rider"), asyncRoute(async (req, res) => {
   const { pickup, destination, rideType, scheduledAt } = req.body ?? {};
-  const amountCents = getRidePrice(rideType, config.ridePrices);
-  if (!validateLocationPair(req.body) || amountCents === undefined) {
+  if (!validateLocationPair(req.body)) {
     return res.status(400).json({ error: "Valid pickup, destination, and ride type are required." });
   }
+  const fare = calculateRideFare(pickup, destination, rideType, config.farePricing);
+  if (!fare) return res.status(400).json({ error: "This ride type or trip distance is not supported." });
+  const { amountCents } = fare;
 
   const rideId = randomUUID();
   const shareToken = randomBytes(32).toString("base64url");
