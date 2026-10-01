@@ -497,19 +497,30 @@ exports.approveDriverApplication = onCall({ region: REGION }, async (request) =>
   const application = applicationSnapshot.data();
   const driverRef = db.collection("drivers").doc(driverUid);
   const existingDriver = await driverRef.get();
-  await driverRef.set({
-    uid: driverUid,
-    displayName: application.displayName,
-    vehicleDescription: application.vehicleDescription,
-    licensePlate: application.licensePlate,
-    acceptsWomenAndMinorsRides: application.acceptsWomenAndMinorsRides === true,
-    womenAndMinorsEligibilityApproved: application.acceptsWomenAndMinorsRides === true,
-    ecoFriendlyVehicle: application.ecoFriendlyVehicle === true,
-    verified: true,
-    available: false,
-    ...(existingDriver.data()?.location ? { location: existingDriver.data().location } : {}),
-    updatedAt: FieldValue.serverTimestamp(),
-  });
+  if (application.preferenceReviewOnly === true) {
+    if (!existingDriver.exists || existingDriver.data().verified !== true) {
+      throw new HttpsError("failed-precondition", "The existing driver profile is not eligible for review.");
+    }
+    await driverRef.update({
+      acceptsWomenAndMinorsRides: application.acceptsWomenAndMinorsRides === true,
+      womenAndMinorsEligibilityApproved: application.acceptsWomenAndMinorsRides === true,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  } else {
+    await driverRef.set({
+      uid: driverUid,
+      displayName: application.displayName,
+      vehicleDescription: application.vehicleDescription,
+      licensePlate: application.licensePlate,
+      acceptsWomenAndMinorsRides: application.acceptsWomenAndMinorsRides === true,
+      womenAndMinorsEligibilityApproved: application.acceptsWomenAndMinorsRides === true,
+      ecoFriendlyVehicle: application.ecoFriendlyVehicle === true,
+      verified: true,
+      available: false,
+      ...(existingDriver.data()?.location ? { location: existingDriver.data().location } : {}),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  }
   const user = await require("firebase-admin/auth").getAuth().getUser(driverUid);
   await require("firebase-admin/auth").getAuth().setCustomUserClaims(driverUid, {
     ...user.customClaims,
