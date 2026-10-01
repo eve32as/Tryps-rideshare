@@ -11,6 +11,11 @@ private enum TrypsStyle {
     static let line = Color(red: 0.91, green: 0.93, blue: 0.92)
 }
 
+private enum TrypsLayout {
+    static let mapBackdropHeightFraction: CGFloat = 0.55
+    static let overlappingBookingPanelHeightFraction: CGFloat = 0.70
+}
+
 private struct Destination: Identifiable {
     let id: String
     let name: String
@@ -112,7 +117,7 @@ struct ContentView: View {
                     destination: destination.coordinate,
                     route: route
                 )
-                    .frame(height: geometry.size.height * 0.55)
+                    .frame(height: geometry.size.height * TrypsLayout.mapBackdropHeightFraction)
                     .ignoresSafeArea(edges: .top)
 
                 VStack(spacing: 0) {
@@ -123,7 +128,7 @@ struct ContentView: View {
                     Spacer(minLength: 0)
 
                     bookingPanel
-                        .frame(height: geometry.size.height * 0.70)
+                        .frame(height: geometry.size.height * TrypsLayout.overlappingBookingPanelHeightFraction)
                 }
             }
             .background(TrypsStyle.paleGreen)
@@ -173,6 +178,7 @@ struct ContentView: View {
         guard let pickupCoordinate else {
             route = nil
             routeError = nil
+            isCalculatingRoute = false
             cameraPosition = .region(
                 MKCoordinateRegion(
                     center: destination.coordinate,
@@ -718,8 +724,15 @@ private final class PickupLocationManager: NSObject, ObservableObject, CLLocatio
         }
     }
 
-    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        authorizationStatus = manager.authorizationStatus
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        let status = manager.authorizationStatus
+        Task { @MainActor [weak self] in
+            self?.applyAuthorizationStatus(status)
+        }
+    }
+
+    private func applyAuthorizationStatus(_ status: CLAuthorizationStatus) {
+        authorizationStatus = status
         if authorizationStatus == .authorizedAlways || authorizationStatus == .authorizedWhenInUse {
             manager.requestLocation()
         } else if authorizationStatus == .denied || authorizationStatus == .restricted {
@@ -727,8 +740,16 @@ private final class PickupLocationManager: NSObject, ObservableObject, CLLocatio
         }
     }
 
-    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
+        let latitude = location.coordinate.latitude
+        let longitude = location.coordinate.longitude
+        Task { @MainActor [weak self] in
+            self?.applyLocation(CLLocation(latitude: latitude, longitude: longitude))
+        }
+    }
+
+    private func applyLocation(_ location: CLLocation) {
         self.location = location
         pickupLabel = "Your location"
         Task {
@@ -741,7 +762,13 @@ private final class PickupLocationManager: NSObject, ObservableObject, CLLocatio
         }
     }
 
-    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        Task { @MainActor [weak self] in
+            self?.applyLocationFailure()
+        }
+    }
+
+    private func applyLocationFailure() {
         if location == nil {
             pickupLabel = authorizationStatus == .denied || authorizationStatus == .restricted
                 ? "Location access needed"
