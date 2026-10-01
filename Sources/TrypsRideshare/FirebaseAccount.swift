@@ -10,6 +10,8 @@ final class FirebaseAccountStore: ObservableObject {
     static let shared = FirebaseAccountStore()
 
     @Published private(set) var email: String?
+    @Published private(set) var userID: String?
+    @Published private(set) var isDriver = false
     @Published private(set) var isConfigured = false
     @Published private(set) var isWorking = false
     @Published var errorMessage: String?
@@ -24,8 +26,22 @@ final class FirebaseAccountStore: ObservableObject {
         if isConfigured {
             authListener = Auth.auth().addStateDidChangeListener { [weak self] _, user in
                 let currentEmail = user?.email
-                Task { @MainActor in
-                    self?.email = currentEmail
+                let currentUserID = user?.uid
+                guard let user else {
+                    Task { @MainActor in
+                        self?.email = nil
+                        self?.userID = nil
+                        self?.isDriver = false
+                    }
+                    return
+                }
+                user.getIDTokenResult { result, _ in
+                    let isDriver = result?.claims["driver"] as? Bool == true
+                    Task { @MainActor in
+                        self?.email = currentEmail
+                        self?.userID = currentUserID
+                        self?.isDriver = isDriver
+                    }
                 }
             }
         }
@@ -88,6 +104,7 @@ final class FirebaseAccountStore: ObservableObject {
 
 struct FirebaseAccountView: View {
     @ObservedObject var account: FirebaseAccountStore
+    @ObservedObject var locationManager: PickupLocationManager
     @Environment(\.dismiss) private var dismiss
     @State private var email = ""
     @State private var password = ""
@@ -103,6 +120,7 @@ struct FirebaseAccountView: View {
                     Text(signedInEmail)
                         .font(.body)
                         .foregroundStyle(TrypsStyle.ink)
+                    FirebaseDriverView(account: account, locationManager: locationManager)
                     Button("Sign out", role: .destructive) {
                         account.signOut()
                     }

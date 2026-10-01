@@ -1,0 +1,71 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function ownsUser(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    match /users/{userId} {
+      allow read: if ownsUser(userId);
+      allow create, update: if ownsUser(userId)
+        && request.resource.data.keys().hasOnly(['displayName', 'updatedAt'])
+        && (!('displayName' in request.resource.data)
+          || (request.resource.data.displayName is string
+            && request.resource.data.displayName.size() <= 80));
+      allow delete: if false;
+
+      match /savedPlaces/{placeId} {
+        allow read: if ownsUser(userId);
+        allow create, update: if ownsUser(userId)
+          && request.resource.data.keys().hasOnly(['name', 'address', 'latitude', 'longitude'])
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.name.size() <= 80
+          && request.resource.data.address is string
+          && request.resource.data.address.size() <= 200
+          && request.resource.data.latitude is number
+          && request.resource.data.latitude >= -90
+          && request.resource.data.latitude <= 90
+          && request.resource.data.longitude is number
+          && request.resource.data.longitude >= -180
+          && request.resource.data.longitude <= 180;
+        allow delete: if ownsUser(userId);
+      }
+    }
+
+    match /rides/{rideId} {
+      allow read: if signedIn()
+        && (resource.data.riderUid == request.auth.uid
+          || resource.data.driverUid == request.auth.uid);
+      allow write: if false;
+    }
+
+    match /drivers/{driverId} {
+      allow read: if ownsUser(driverId);
+      allow write: if false;
+
+      match /offers/{rideId} {
+        allow read: if ownsUser(driverId);
+        allow write: if false;
+      }
+    }
+
+    match /driverApplications/{userId} {
+      allow read: if ownsUser(userId);
+      allow write: if false;
+    }
+
+    match /rideQuotes/{quoteId} {
+      allow read, write: if false;
+    }
+
+    match /stripeEvents/{eventId} {
+      allow read, write: if false;
+    }
+  }
+}

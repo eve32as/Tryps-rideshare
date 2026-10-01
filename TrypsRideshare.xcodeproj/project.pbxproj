@@ -13,6 +13,11 @@
 		A10000000000000000000005 /* FirebaseAccount.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000016 /* FirebaseAccount.swift */; };
 		A10000000000000000000006 /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000082 /* FirebaseAuth */; };
 		A10000000000000000000007 /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000083 /* FirebaseCore */; };
+		A10000000000000000000008 /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000084 /* FirebaseFirestore */; };
+		A10000000000000000000009 /* FirebaseFunctions in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000085 /* FirebaseFunctions */; };
+		A1000000000000000000000A /* StripePaymentSheet in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000087 /* StripePaymentSheet */; };
+		A1000000000000000000000B /* FirebaseRideService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* FirebaseRideService.swift */; };
+		A1000000000000000000000C /* FirebaseDriverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* FirebaseDriverView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -22,6 +27,8 @@
 		A10000000000000000000014 /* BookingReadiness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookingReadiness.swift; sourceTree = "<group>"; };
 		A10000000000000000000015 /* BookingFare.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookingFare.swift; sourceTree = "<group>"; };
 		A10000000000000000000016 /* FirebaseAccount.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirebaseAccount.swift; sourceTree = "<group>"; };
+		A10000000000000000000017 /* FirebaseRideService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirebaseRideService.swift; sourceTree = "<group>"; };
+		A10000000000000000000018 /* FirebaseDriverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirebaseDriverView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -31,6 +38,9 @@
 			files = (
 				A10000000000000000000006 /* FirebaseAuth in Frameworks */,
 				A10000000000000000000007 /* FirebaseCore in Frameworks */,
+				A10000000000000000000008 /* FirebaseFirestore in Frameworks */,
+				A10000000000000000000009 /* FirebaseFunctions in Frameworks */,
+				A1000000000000000000000A /* StripePaymentSheet in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -53,6 +63,8 @@
 				A10000000000000000000014 /* BookingReadiness.swift */,
 				A10000000000000000000015 /* BookingFare.swift */,
 				A10000000000000000000016 /* FirebaseAccount.swift */,
+				A10000000000000000000017 /* FirebaseRideService.swift */,
+				A10000000000000000000018 /* FirebaseDriverView.swift */,
 			);
 			path = Sources/TrypsRideshare;
 			sourceTree = "<group>";
@@ -81,6 +93,9 @@
 			packageProductDependencies = (
 				A10000000000000000000082 /* FirebaseAuth */,
 				A10000000000000000000083 /* FirebaseCore */,
+				A10000000000000000000084 /* FirebaseFirestore */,
+				A10000000000000000000085 /* FirebaseFunctions */,
+				A10000000000000000000087 /* StripePaymentSheet */,
 			);
 			name = TrypsRideshare;
 			productName = TrypsRideshare;
@@ -115,6 +130,7 @@
 			);
 			packageReferences = (
 				A10000000000000000000081 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
+				A10000000000000000000086 /* XCRemoteSwiftPackageReference "stripe-ios-spm" */,
 			);
 		};
 /* End PBXProject section */
@@ -138,6 +154,8 @@
 				A10000000000000000000003 /* BookingReadiness.swift in Sources */,
 				A10000000000000000000004 /* BookingFare.swift in Sources */,
 				A10000000000000000000005 /* FirebaseAccount.swift in Sources */,
+				A1000000000000000000000B /* FirebaseRideService.swift in Sources */,
+				A1000000000000000000000C /* FirebaseDriverView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -241,7 +259,33 @@
 			package = A10000000000000000000081 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
 			productName = FirebaseCore;
 		};
+		A10000000000000000000084 /* FirebaseFirestore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000000000000000000081 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseFirestore;
+		};
+		A10000000000000000000085 /* FirebaseFunctions */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000000000000000000081 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseFunctions;
+		};
+		A10000000000000000000087 /* StripePaymentSheet */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000000000000000000086 /* XCRemoteSwiftPackageReference "stripe-ios-spm" */;
+			productName = StripePaymentSheet;
+		};
 /* End XCSwiftPackageProductDependency section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A10000000000000000000086 /* XCRemoteSwiftPackageReference "stripe-ios-spm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/stripe/stripe-ios-spm.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 26.12.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
 	};
 	rootObject = A10000000000000000000042 /* Project object */;
 }
