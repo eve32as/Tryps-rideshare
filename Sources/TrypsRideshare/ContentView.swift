@@ -1,5 +1,7 @@
 #if canImport(SwiftUI)
 import SwiftUI
+import MapKit
+import CoreLocation
 
 private enum TrypsStyle {
     static let ink = Color(red: 0.10, green: 0.15, blue: 0.14)
@@ -9,18 +11,19 @@ private enum TrypsStyle {
     static let line = Color(red: 0.91, green: 0.93, blue: 0.92)
 }
 
-private struct Destination: Identifiable, Hashable {
+private struct Destination: Identifiable {
     let id: String
     let name: String
     let subtitle: String
     let symbol: String
+    let coordinate: CLLocationCoordinate2D
 
     static let suggestions = [
-        Destination(id: "mission", name: "Mission Dolores Park", subtitle: "Dolores St, San Francisco", symbol: "leaf"),
-        Destination(id: "sfo", name: "San Francisco Airport", subtitle: "San Francisco International", symbol: "airplane"),
-        Destination(id: "ferry", name: "Ferry Building", subtitle: "1 Ferry Building, San Francisco", symbol: "water.waves"),
-        Destination(id: "chase", name: "Chase Center", subtitle: "1 Warriors Way, San Francisco", symbol: "basketball"),
-        Destination(id: "painted", name: "Painted Ladies", subtitle: "Steiner St, San Francisco", symbol: "house"),
+        Destination(id: "mission", name: "Mission Dolores Park", subtitle: "Dolores St, San Francisco", symbol: "leaf", coordinate: CLLocationCoordinate2D(latitude: 37.7596, longitude: -122.4269)),
+        Destination(id: "sfo", name: "San Francisco Airport", subtitle: "San Francisco International", symbol: "airplane", coordinate: CLLocationCoordinate2D(latitude: 37.6213, longitude: -122.3790)),
+        Destination(id: "ferry", name: "Ferry Building", subtitle: "1 Ferry Building, San Francisco", symbol: "water.waves", coordinate: CLLocationCoordinate2D(latitude: 37.7955, longitude: -122.3937)),
+        Destination(id: "chase", name: "Chase Center", subtitle: "1 Warriors Way, San Francisco", symbol: "basketball", coordinate: CLLocationCoordinate2D(latitude: 37.7680, longitude: -122.3877)),
+        Destination(id: "painted", name: "Painted Ladies", subtitle: "Steiner St, San Francisco", symbol: "house", coordinate: CLLocationCoordinate2D(latitude: 37.7761, longitude: -122.4329)),
     ]
 }
 
@@ -44,11 +47,31 @@ struct ContentView: View {
     @State private var selectedRide = Ride.options[0]
     @State private var isChoosingDestination = false
     @State private var isRideRequested = false
+    @State private var route: MKRoute?
+    @State private var routeError: String?
+    @State private var isCalculatingRoute = false
+    @State private var cameraPosition: MapCameraPosition = .region(
+        MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: 37.7596, longitude: -122.4269),
+            span: MKCoordinateSpan(latitudeDelta: 0.035, longitudeDelta: 0.035)
+        )
+    )
+    @StateObject private var locationManager = PickupLocationManager()
+
+    private var routeRequestID: String {
+        guard let location = locationManager.location else { return "no-pickup" }
+        return "\(location.coordinate.latitude),\(location.coordinate.longitude)-\(destination.id)"
+    }
 
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .top) {
-                MapPreview()
+                RideMapView(
+                    cameraPosition: $cameraPosition,
+                    pickup: locationManager.location?.coordinate,
+                    destination: destination.coordinate,
+                    route: route
+                )
                     .frame(height: geometry.size.height * 0.55)
                     .ignoresSafeArea(edges: .top)
 
@@ -67,8 +90,17 @@ struct ContentView: View {
             .ignoresSafeArea(edges: .top)
         }
         .preferredColorScheme(.light)
+        .task {
+            locationManager.requestLocation()
+        }
+        .task(id: routeRequestID) {
+            await calculateRoute()
+        }
         .sheet(isPresented: $isChoosingDestination) {
-            DestinationPicker(selectedDestination: $destination)
+            DestinationPicker(
+                selectedDestination: $destination,
+                searchRegionCenter: locationManager.location?.coordinate
+            )
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
@@ -77,6 +109,49 @@ struct ContentView: View {
         } message: {
             Text("\(selectedRide.name) to \(destination.name) · about \(selectedRide.fare) dollars")
         }
+    }
+
+    private func calculateRoute() async {
+        guard let pickup = locationManager.location else {
+            route = nil
+            routeError = nil
+            return
+        }
+
+        isCalculatingRoute = true
+        routeError = nil
+        defer { isCalculatingRoute = false }
+
+        let request = MKDirections.Request()
+        request.source = MKMapItem(placemark: MKPlacemark(coordinate: pickup.coordinate))
+        request.destination = MKMapItem(placemark: MKPlacemark(coordinate: destination.coordinate))
+        request.transportType = .automobile
+
+        do {
+            let response = try await MKDirections(request: request).calculate()
+            guard !Task.isCancelled else { return }
+            guard let route = response.routes.first else {
+                self.route = nil
+                routeError = "No driving route found"
+                return
+            }
+            self.route = route
+            cameraPosition = .rect(route.polyline.boundingMapRect)
+        } catch {
+            guard !Task.isCancelled else { return }
+            route = nil
+            routeError = "Route unavailable"
+        }
+    }
+
+    private var routeSummary: String {
+        if isCalculatingRoute { return "Finding your route…" }
+        if let route {
+            let minutes = max(1, Int((route.expectedTravelTime / 60).rounded()))
+            let miles = route.distance / 1_609.344
+            return "\(minutes) min · \(miles.formatted(.number.precision(.fractionLength(1)))) mi"
+        }
+        return routeError ?? "Waiting for pickup location"
     }
 
     private var header: some View {
@@ -145,9 +220,9 @@ struct ContentView: View {
                             .tracking(1.1)
                             .foregroundStyle(TrypsStyle.muted)
                         Spacer()
-                        Text("Upfront pricing")
+                        Text(routeSummary)
                             .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(TrypsStyle.green)
+                            .foregroundStyle(route == nil ? TrypsStyle.muted : TrypsStyle.green)
                     }
                     .padding(.top, 1)
 
@@ -239,14 +314,20 @@ struct ContentView: View {
                         Text("Pickup")
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(TrypsStyle.muted)
-                        Text("Current location")
+                        Text(locationManager.pickupLabel)
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(TrypsStyle.ink)
+                            .lineLimit(1)
                     }
                     Spacer()
-                    Image(systemName: "location.fill")
-                        .font(.system(size: 12))
+                    Button {
+                    locationManager.requestLocation()
+                    } label: {
+                    Image(systemName: locationManager.location == nil ? "location.circle" : "location.fill")
+                        .font(.system(size: 17))
                         .foregroundStyle(TrypsStyle.green)
+                    }
+                    .accessibilityLabel("Update pickup location")
                 }
 
                 Rectangle()
@@ -350,43 +431,51 @@ private struct RideOptionRow: View {
 private struct DestinationPicker: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var selectedDestination: Destination
+    let searchRegionCenter: CLLocationCoordinate2D?
     @State private var searchText = ""
-
-    private var results: [Destination] {
-        guard !searchText.isEmpty else { return Destination.suggestions }
-        return Destination.suggestions.filter {
-            $0.name.localizedCaseInsensitiveContains(searchText)
-                || $0.subtitle.localizedCaseInsensitiveContains(searchText)
-        }
-    }
+    @State private var searchResults = Destination.suggestions
+    @State private var isSearching = false
 
     var body: some View {
         NavigationStack {
-            List(results) { destination in
-                Button {
-                    selectedDestination = destination
-                    dismiss()
-                } label: {
-                    HStack(spacing: 14) {
-                        Image(systemName: destination.symbol)
-                            .font(.system(size: 17, weight: .medium))
-                            .foregroundStyle(TrypsStyle.green)
-                            .frame(width: 38, height: 38)
-                            .background(TrypsStyle.paleGreen, in: RoundedRectangle(cornerRadius: 12))
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(destination.name)
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(TrypsStyle.ink)
-                            Text(destination.subtitle)
-                                .font(.system(size: 12))
-                                .foregroundStyle(TrypsStyle.muted)
+            Group {
+                if searchResults.isEmpty && !isSearching {
+                    ContentUnavailableView.search(text: searchText)
+                } else {
+                    List(searchResults) { destination in
+                        Button {
+                            selectedDestination = destination
+                            dismiss()
+                        } label: {
+                            HStack(spacing: 14) {
+                                Image(systemName: destination.symbol)
+                                    .font(.system(size: 17, weight: .medium))
+                                    .foregroundStyle(TrypsStyle.green)
+                                    .frame(width: 38, height: 38)
+                                    .background(TrypsStyle.paleGreen, in: RoundedRectangle(cornerRadius: 12))
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(destination.name)
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundStyle(TrypsStyle.ink)
+                                    Text(destination.subtitle)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(TrypsStyle.muted)
+                                }
+                            }
+                            .padding(.vertical, 4)
                         }
+                        .listRowSeparator(.hidden)
                     }
-                    .padding(.vertical, 4)
+                    .listStyle(.plain)
                 }
-                .listRowSeparator(.hidden)
             }
-            .listStyle(.plain)
+            .overlay {
+                if isSearching {
+                    ProgressView("Searching places…")
+                        .padding(14)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                }
+            }
             .searchable(text: $searchText, prompt: "Search places")
             .navigationTitle("Choose a destination")
             .navigationBarTitleDisplayMode(.inline)
@@ -396,98 +485,152 @@ private struct DestinationPicker: View {
                         .tint(TrypsStyle.green)
                 }
             }
+            .task(id: searchText) {
+                await searchPlaces()
+            }
+        }
+    }
+
+    private func searchPlaces() async {
+        guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            searchResults = Destination.suggestions
+            isSearching = false
+            return
+        }
+
+        isSearching = true
+        defer { isSearching = false }
+        do {
+            let request = MKLocalSearch.Request()
+            request.naturalLanguageQuery = searchText
+            if let center = searchRegionCenter {
+                request.region = MKCoordinateRegion(
+                    center: center,
+                    span: MKCoordinateSpan(latitudeDelta: 0.5, longitudeDelta: 0.5)
+                )
+            }
+
+            let response = try await MKLocalSearch(request: request).start()
+            guard !Task.isCancelled else { return }
+            searchResults = response.mapItems.compactMap { item in
+                guard let name = item.name else { return nil }
+                let coordinate = item.placemark.coordinate
+                guard CLLocationCoordinate2DIsValid(coordinate) else { return nil }
+                return Destination(
+                    id: "\(coordinate.latitude),\(coordinate.longitude)",
+                    name: name,
+                    subtitle: item.placemark.title ?? "",
+                    symbol: "mappin.and.ellipse",
+                    coordinate: coordinate
+                )
+            }
+        } catch {
+            guard !Task.isCancelled else { return }
+            searchResults = []
         }
     }
 }
 
-private struct MapPreview: View {
+private struct RideMapView: View {
+    @Binding var cameraPosition: MapCameraPosition
+    let pickup: CLLocationCoordinate2D?
+    let destination: CLLocationCoordinate2D
+    let route: MKRoute?
+
     var body: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .topLeading) {
-                Canvas { context, size in
-                    context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color(red: 0.91, green: 0.94, blue: 0.91)))
-
-                    let blocks: [(CGFloat, CGFloat, CGFloat, CGFloat)] = [
-                        (0.04, 0.17, 0.20, 0.14), (0.34, 0.06, 0.22, 0.13), (0.68, 0.14, 0.24, 0.12),
-                        (0.11, 0.43, 0.21, 0.11), (0.41, 0.35, 0.21, 0.12), (0.75, 0.42, 0.20, 0.14),
-                        (0.06, 0.72, 0.24, 0.13), (0.40, 0.70, 0.19, 0.14), (0.73, 0.74, 0.23, 0.12),
-                    ]
-                    for (x, y, width, height) in blocks {
-                        let rect = CGRect(x: size.width * x, y: size.height * y, width: size.width * width, height: size.height * height)
-                        context.fill(Path(roundedRect: rect, cornerRadius: 8), with: .color(Color.white.opacity(0.64)))
-                    }
-
-                    for index in 0..<5 {
-                        var road = Path()
-                        let offset = CGFloat(index) * size.width * 0.22
-                        road.move(to: CGPoint(x: offset - size.width * 0.15, y: 0))
-                        road.addCurve(
-                            to: CGPoint(x: offset + size.width * 0.18, y: size.height),
-                            control1: CGPoint(x: offset + size.width * 0.14, y: size.height * 0.34),
-                            control2: CGPoint(x: offset - size.width * 0.08, y: size.height * 0.61)
-                        )
-                        context.stroke(road, with: .color(.white.opacity(0.95)), style: StrokeStyle(lineWidth: 12, lineCap: .round))
-                        context.stroke(road, with: .color(Color(red: 0.82, green: 0.87, blue: 0.83)), style: StrokeStyle(lineWidth: 1, dash: [4, 5]))
-                    }
-
-                    for index in 0..<4 {
-                        var road = Path()
-                        let y = size.height * (0.17 + CGFloat(index) * 0.23)
-                        road.move(to: CGPoint(x: 0, y: y))
-                        road.addCurve(
-                            to: CGPoint(x: size.width, y: y + size.height * 0.12),
-                            control1: CGPoint(x: size.width * 0.37, y: y - size.height * 0.09),
-                            control2: CGPoint(x: size.width * 0.61, y: y + size.height * 0.17)
-                        )
-                        context.stroke(road, with: .color(.white.opacity(0.92)), lineWidth: 9)
-                    }
-
-                    var route = Path()
-                    route.move(to: CGPoint(x: size.width * 0.27, y: size.height * 0.63))
-                    route.addCurve(
-                        to: CGPoint(x: size.width * 0.65, y: size.height * 0.39),
-                        control1: CGPoint(x: size.width * 0.41, y: size.height * 0.59),
-                        control2: CGPoint(x: size.width * 0.53, y: size.height * 0.35)
-                    )
-                    context.stroke(route, with: .color(TrypsStyle.green), style: StrokeStyle(lineWidth: 4, lineCap: .round))
+        Map(position: $cameraPosition) {
+            if let pickup {
+                Annotation("Pickup", coordinate: pickup) {
+                    mapMarker(symbol: "location.fill", tint: TrypsStyle.green)
                 }
-
-                mapMarker(symbol: "circle.fill", tint: TrypsStyle.green)
-                    .position(x: geometry.size.width * 0.27, y: geometry.size.height * 0.63)
-                mapMarker(symbol: "mappin.and.ellipse", tint: Color(red: 0.91, green: 0.56, blue: 0.29))
-                    .position(x: geometry.size.width * 0.65, y: geometry.size.height * 0.39)
-
-                VStack {
-                    Spacer()
-                    HStack {
-                        Spacer()
-                        Button { } label: {
-                            Image(systemName: "location.north.fill")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(TrypsStyle.ink)
-                                .frame(width: 42, height: 42)
-                                .background(.white, in: Circle())
-                                .shadow(color: .black.opacity(0.10), radius: 9, y: 3)
-                        }
-                        .accessibilityLabel("Center map on your location")
-                    }
-                    .padding(.trailing, 20)
-                    .padding(.bottom, 24)
-                }
+                .annotationTitles(.hidden)
             }
+            Annotation("Drop-off", coordinate: destination) {
+                mapMarker(symbol: "mappin.and.ellipse", tint: Color(red: 0.91, green: 0.56, blue: 0.29))
+            }
+            .annotationTitles(.hidden)
+            if let route {
+                MapPolyline(route.polyline)
+                    .stroke(TrypsStyle.green, lineWidth: 5)
+            }
+            UserAnnotation()
         }
-        .clipped()
-        .accessibilityHidden(true)
+        .mapControls {
+            MapUserLocationButton()
+            MapCompass()
+        }
+        .mapControlVisibility(.visible)
     }
 
     private func mapMarker(symbol: String, tint: Color) -> some View {
         Image(systemName: symbol)
-            .font(.system(size: 20, weight: .bold))
+            .font(.system(size: 15, weight: .bold))
             .foregroundStyle(.white)
-            .frame(width: 34, height: 34)
+            .frame(width: 36, height: 36)
             .background(tint, in: Circle())
             .overlay(Circle().stroke(.white, lineWidth: 3))
             .shadow(color: .black.opacity(0.15), radius: 6, y: 3)
+    }
+}
+
+@MainActor
+private final class PickupLocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
+    @Published private(set) var location: CLLocation?
+    @Published private(set) var pickupLabel = "Finding your location…"
+    @Published private(set) var authorizationStatus: CLAuthorizationStatus = .notDetermined
+
+    private let manager = CLLocationManager()
+    private let geocoder = CLGeocoder()
+
+    override init() {
+        super.init()
+        manager.delegate = self
+        manager.desiredAccuracy = kCLLocationAccuracyBest
+        authorizationStatus = manager.authorizationStatus
+    }
+
+    func requestLocation() {
+        switch manager.authorizationStatus {
+        case .authorizedAlways, .authorizedWhenInUse:
+            pickupLabel = "Finding your location…"
+            manager.requestLocation()
+        case .notDetermined:
+            manager.requestWhenInUseAuthorization()
+        case .denied, .restricted:
+            pickupLabel = "Location access needed"
+        @unknown default:
+            pickupLabel = "Location unavailable"
+        }
+    }
+
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        authorizationStatus = manager.authorizationStatus
+        if authorizationStatus == .authorizedAlways || authorizationStatus == .authorizedWhenInUse {
+            manager.requestLocation()
+        } else if authorizationStatus == .denied || authorizationStatus == .restricted {
+            pickupLabel = "Location access needed"
+        }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard let location = locations.last else { return }
+        self.location = location
+        pickupLabel = "Your location"
+        Task {
+            guard let placemark = try? await geocoder.reverseGeocodeLocation(location),
+                  let name = placemark.first?.name,
+                  self.location?.coordinate.latitude == location.coordinate.latitude,
+                  self.location?.coordinate.longitude == location.coordinate.longitude else { return }
+            pickupLabel = name
+        }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        if location == nil {
+            pickupLabel = authorizationStatus == .denied || authorizationStatus == .restricted
+                ? "Location access needed"
+                : "Couldn’t find your location"
+        }
     }
 }
 #endif

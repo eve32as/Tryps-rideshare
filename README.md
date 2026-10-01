@@ -1,6 +1,6 @@
 # Tryps Rideshare
 
-A SwiftUI rideshare app prototype for iPhone and iPad. The booking screen includes a custom illustrated map, pickup and destination details, searchable destinations, ride tiers with upfront fares, and a ride request confirmation.
+A SwiftUI rideshare app prototype for iPhone and iPad. The booking screen uses Apple Maps, device location, live place search, and driving directions with estimated trip time and distance.
 
 ## Run the app
 
@@ -12,4 +12,4 @@ The project also includes a Swift package so its non-Apple fallback can be built
 swift test
 ```
 
-Ride options, locations, fares, and payment details are sample data; live maps, location services, payments, and ride dispatch are not connected.
+The app requests location access while in use to identify the pickup point. If access is denied or a route cannot be found, the app reports that state and keeps the map and destination search available. Ride options, fares, payment details, and ride requests are still sample data; payments and ride dispatch are not connected.

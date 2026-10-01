@@ -126,6 +126,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Tryps;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Tryps uses your location to set your pickup and calculate your route.";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.tryps.rideshare;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -140,6 +141,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Tryps;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Tryps uses your location to set your pickup and calculate your route.";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.tryps.rideshare;
 				PRODUCT_NAME = "$(TARGET_NAME)";
