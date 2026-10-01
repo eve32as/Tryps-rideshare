@@ -74,6 +74,8 @@ struct ContentView: View {
     @State private var destination = Destination.suggestions[0]
     @State private var selectedPickup: Destination?
     @State private var selectedRide = Ride.options[0]
+    @State private var womanDriverForWomenAndMinors = false
+    @State private var ecoFriendlyVehicle = false
     @State private var editingStop: EditingStop?
     @State private var isShowingAccount = false
     @StateObject private var account = FirebaseAccountStore.shared
@@ -373,6 +375,35 @@ struct ContentView: View {
                         .padding(.horizontal, 4)
                     }
 
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("RIDE PREFERENCES")
+                            .font(.system(size: 11, weight: .bold))
+                            .tracking(1.1)
+                            .foregroundStyle(TrypsStyle.muted)
+                        Toggle(isOn: $womanDriverForWomenAndMinors) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Woman driver")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(TrypsStyle.ink)
+                                Text("For women and minors; only opted-in drivers receive this request.")
+                                    .font(.caption)
+                                    .foregroundStyle(TrypsStyle.muted)
+                            }
+                        }
+                        .disabled(rideStore.rideId != nil)
+                        Toggle(isOn: $ecoFriendlyVehicle) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Eco-friendly vehicle")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(TrypsStyle.ink)
+                                Text("Request an electric or hybrid vehicle.")
+                                    .font(.caption)
+                                    .foregroundStyle(TrypsStyle.muted)
+                            }
+                        }
+                        .disabled(rideStore.rideId != nil)
+                    }
+
                     if let rideID = rideStore.rideId {
                         rideStatusCard(rideID: rideID)
                     }
@@ -413,7 +444,13 @@ struct ContentView: View {
             Button {
                 guard canRequestRide else { return }
                 guard let quote = rideStore.quotes[selectedRide.id] else { return }
-                Task { await rideStore.requestRide(quote: quote) }
+                Task {
+                    await rideStore.requestRide(
+                        quote: quote,
+                        womanDriverForWomenAndMinors: womanDriverForWomenAndMinors,
+                        ecoFriendlyVehicle: ecoFriendlyVehicle
+                    )
+                }
             } label: {
                 HStack {
                     Text(rideStore.rideId == nil ? "Request & pay · \(selectedRide.name)" : "Retry secure payment")

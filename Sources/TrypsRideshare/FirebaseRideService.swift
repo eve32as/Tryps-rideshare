@@ -104,7 +104,11 @@ final class FirebaseRideStore: ObservableObject {
         }
     }
 
-    func requestRide(quote: RideQuote) async {
+    func requestRide(
+        quote: RideQuote,
+        womanDriverForWomenAndMinors: Bool,
+        ecoFriendlyVehicle: Bool
+    ) async {
         guard rideId == nil else {
             await startPayment(for: rideId!)
             return
@@ -113,7 +117,13 @@ final class FirebaseRideStore: ObservableObject {
         errorMessage = nil
         defer { isWorking = false }
         do {
-            let booking = try await call("createRideBooking", data: ["quoteId": quote.id])
+            let booking = try await call("createRideBooking", data: [
+                "quoteId": quote.id,
+                "preferences": [
+                    "womanDriverForWomenAndMinors": womanDriverForWomenAndMinors,
+                    "ecoFriendlyVehicle": ecoFriendlyVehicle,
+                ],
+            ])
             guard let newRideId = booking["rideId"] as? String else {
                 throw RideServiceError.invalidResponse
             }
@@ -366,7 +376,11 @@ final class FirebaseRideStore: ObservableObject {
         errorMessage = "Add Firebase Firestore and Functions to the Swift package to enable ride quotes."
     }
 
-    func requestRide(quote: RideQuote) async {
+    func requestRide(
+        quote: RideQuote,
+        womanDriverForWomenAndMinors: Bool,
+        ecoFriendlyVehicle: Bool
+    ) async {
         errorMessage = "Ride booking is available in the configured Xcode app."
     }
 

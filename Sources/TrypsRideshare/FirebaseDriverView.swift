@@ -135,7 +135,13 @@ private final class FirebaseDriverStore: ObservableObject {
         isAvailable = false
     }
 
-    func submitApplication(displayName: String, vehicle: String, plate: String) async {
+    func submitApplication(
+        displayName: String,
+        vehicle: String,
+        plate: String,
+        acceptsWomenAndMinorsRides: Bool,
+        ecoFriendlyVehicle: Bool
+    ) async {
         isWorking = true
         errorMessage = nil
         defer { isWorking = false }
@@ -144,6 +150,8 @@ private final class FirebaseDriverStore: ObservableObject {
                 "displayName": displayName,
                 "vehicleDescription": vehicle,
                 "licensePlate": plate,
+                "acceptsWomenAndMinorsRides": acceptsWomenAndMinorsRides,
+                "ecoFriendlyVehicle": ecoFriendlyVehicle,
             ])
             applicationSubmitted = true
         } catch {
@@ -279,6 +287,8 @@ struct FirebaseDriverView: View {
     @State private var displayName = ""
     @State private var vehicle = ""
     @State private var plate = ""
+    @State private var acceptsWomenAndMinorsRides = false
+    @State private var ecoFriendlyVehicle = false
 
     var body: some View {
         Group {
@@ -351,12 +361,23 @@ struct FirebaseDriverView: View {
                 TextField("License plate", text: $plate)
                     .textInputAutocapitalization(.characters)
                     .textFieldStyle(.roundedBorder)
+                Toggle("Electric or hybrid vehicle", isOn: $ecoFriendlyVehicle)
+                Toggle(isOn: $acceptsWomenAndMinorsRides) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Woman driver opt-in")
+                        Text("I identify as a woman and opt in to requests for women and minors.")
+                            .font(.caption)
+                            .foregroundStyle(TrypsStyle.muted)
+                    }
+                }
                 Button {
                     Task {
                         await driver.submitApplication(
                             displayName: displayName,
                             vehicle: vehicle,
-                            plate: plate
+                            plate: plate,
+                            acceptsWomenAndMinorsRides: acceptsWomenAndMinorsRides,
+                            ecoFriendlyVehicle: ecoFriendlyVehicle
                         )
                     }
                 } label: {

@@ -68,16 +68,35 @@ function calculateQuote(pickup, dropOff, rideType, routeDistanceMeters) {
   };
 }
 
+function normalizeRidePreferences(value) {
+  if (value === undefined) {
+    return { womanDriverForWomenAndMinors: false, ecoFriendlyVehicle: false };
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value) ||
+      Object.keys(value).some((key) =>
+        !["womanDriverForWomenAndMinors", "ecoFriendlyVehicle"].includes(key)
+      ) ||
+      Object.values(value).some((enabled) => typeof enabled !== "boolean")) {
+    throw new TypeError("Ride preferences are invalid.");
+  }
+  return {
+    womanDriverForWomenAndMinors: value.womanDriverForWomenAndMinors ?? false,
+    ecoFriendlyVehicle: value.ecoFriendlyVehicle ?? false,
+  };
+}
+
 function isFreshDriverLocation(updatedAtMillis, nowMillis, maxAgeMillis = DRIVER_LOCATION_MAX_AGE_MS) {
   return Number.isFinite(updatedAtMillis) &&
     updatedAtMillis <= nowMillis + DRIVER_LOCATION_FUTURE_TOLERANCE_MS &&
     nowMillis - updatedAtMillis <= maxAgeMillis;
 }
 
-function rankNearbyDrivers(drivers, pickup, radiusKm, nowMillis) {
+function rankNearbyDrivers(drivers, pickup, radiusKm, nowMillis, preferences = {}) {
   if (!validCoordinate(pickup) || !Number.isFinite(radiusKm) || radiusKm <= 0) return [];
   return drivers
     .filter((driver) => driver.available === true && driver.verified === true &&
+      (!preferences.womanDriverForWomenAndMinors || driver.acceptsWomenAndMinorsRides === true) &&
+      (!preferences.ecoFriendlyVehicle || driver.ecoFriendlyVehicle === true) &&
       validCoordinate(driver.location) &&
       isFreshDriverLocation(driver.locationUpdatedAtMillis, nowMillis))
     .map((driver) => ({
@@ -106,6 +125,7 @@ module.exports = {
   canTransitionRide,
   distanceInKilometers,
   isFreshDriverLocation,
+  normalizeRidePreferences,
   rankNearbyDrivers,
   validCoordinate,
 };

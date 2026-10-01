@@ -9,6 +9,7 @@ const {
   canTransitionRide,
   distanceInKilometers,
   isFreshDriverLocation,
+  normalizeRidePreferences,
   rankNearbyDrivers,
   validCoordinate,
 } = require("./domain");
@@ -122,6 +123,52 @@ test("matches only verified, available, recently located drivers within radius",
   );
   assert.equal(isFreshDriverLocation(now + 20_000, now), true);
   assert.equal(isFreshDriverLocation(now + 31_000, now), false);
+});
+
+test("matches only drivers that satisfy opted-in safety and eco preferences", () => {
+  const now = 1_800_000_000_000;
+  const pickup = { latitude: 37.7749, longitude: -122.4194 };
+  const driver = {
+    uid: "eligible",
+    available: true,
+    verified: true,
+    acceptsWomenAndMinorsRides: true,
+    ecoFriendlyVehicle: true,
+    location: pickup,
+    locationUpdatedAtMillis: now,
+  };
+  assert.deepEqual(
+    rankNearbyDrivers([driver], pickup, 15, now, {
+      womanDriverForWomenAndMinors: true,
+      ecoFriendlyVehicle: true,
+    }).map(({ uid }) => uid),
+    ["eligible"]
+  );
+  assert.deepEqual(
+    rankNearbyDrivers([{ ...driver, acceptsWomenAndMinorsRides: false }], pickup, 15, now, {
+      womanDriverForWomenAndMinors: true,
+    }),
+    []
+  );
+  assert.deepEqual(
+    rankNearbyDrivers([{ ...driver, ecoFriendlyVehicle: false }], pickup, 15, now, {
+      ecoFriendlyVehicle: true,
+    }),
+    []
+  );
+});
+
+test("validates rider preferences and defaults omitted preferences to standard matching", () => {
+  assert.deepEqual(normalizeRidePreferences(undefined), {
+    womanDriverForWomenAndMinors: false,
+    ecoFriendlyVehicle: false,
+  });
+  assert.deepEqual(normalizeRidePreferences({ ecoFriendlyVehicle: true }), {
+    womanDriverForWomenAndMinors: false,
+    ecoFriendlyVehicle: true,
+  });
+  assert.throws(() => normalizeRidePreferences({ womanDriverForWomenAndMinors: "yes" }), TypeError);
+  assert.throws(() => normalizeRidePreferences({ unknown: true }), TypeError);
 });
 
 test("geohash search bounds include nearby drivers and exclude distant regions", () => {
