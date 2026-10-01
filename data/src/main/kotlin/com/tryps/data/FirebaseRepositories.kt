@@ -15,6 +15,7 @@ import com.tryps.model.RideQuote
 import com.tryps.model.RideStatus
 import com.tryps.model.UserProfile
 import com.tryps.model.UserRole
+import com.tryps.model.VehicleCategory
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.awaitClose
@@ -57,7 +58,13 @@ class FirebaseAccountRepository(
         auth.signInWithEmailAndPassword(email.trim(), password).await()
     }
 
-    override suspend fun register(name: String, email: String, password: String, role: UserRole) {
+    override suspend fun register(
+        name: String,
+        email: String,
+        password: String,
+        role: UserRole,
+        vehicleCategory: VehicleCategory,
+    ) {
         val user = auth.createUserWithEmailAndPassword(email.trim(), password).await().user
             ?: error("Firebase did not create an account")
         firestore.collection("users").document(user.uid).set(
@@ -66,6 +73,7 @@ class FirebaseAccountRepository(
                 "email" to email.trim(),
                 "role" to role.name,
                 "rating" to 5.0,
+                "vehicleCategory" to vehicleCategory.name,
                 "createdAt" to FieldValue.serverTimestamp(),
             ),
         ).await()
@@ -117,7 +125,7 @@ class FirebaseRideRepository(
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
-    override fun observeOpenRides(driverId: String): Flow<List<Ride>> =
+    override fun observeOpenRides(driverId: String, vehicleCategory: VehicleCategory): Flow<List<Ride>> =
         combine(rides, observeDriverDispatchState(driverId)) { current, dispatchState ->
             current to dispatchState
         }
@@ -125,7 +133,12 @@ class FirebaseRideRepository(
                 current.filter { it.status == RideStatus.SEARCHING }.map(Ride::id) to dispatchState
             }
             .mapLatest { (current, dispatchState) ->
-                val openRides = current.filter { it.status == RideStatus.SEARCHING }
+                val openRides = current.filter {
+                    it.status == RideStatus.SEARCHING &&
+                        (it.vehicleCategory == VehicleCategory.ANY ||
+                            vehicleCategory == VehicleCategory.ANY ||
+                            it.vehicleCategory == vehicleCategory)
+                }
                     .sortedBy(Ride::createdAtEpochMillis)
                 if (openRides.isEmpty() || !dispatchState.first) return@mapLatest openRides
 
@@ -180,7 +193,13 @@ class FirebaseRideRepository(
         )
     }
 
-    override suspend fun request(rider: UserProfile, pickup: Place, destination: Place, quote: RideQuote) {
+    override suspend fun request(
+        rider: UserProfile,
+        pickup: Place,
+        destination: Place,
+        quote: RideQuote,
+        vehicleCategory: VehicleCategory,
+    ) {
         val document = firestore.collection("rides").document()
         document.set(
             mapOf(
@@ -189,6 +208,7 @@ class FirebaseRideRepository(
                 "pickup" to pickup.toMap(),
                 "destination" to destination.toMap(),
                 "quote" to quote.toMap(),
+                "vehicleCategory" to vehicleCategory.name,
                 "status" to RideStatus.SEARCHING.name,
                 "createdAt" to FieldValue.serverTimestamp(),
                 "createdAtEpochMillis" to System.currentTimeMillis(),
@@ -210,7 +230,11 @@ class FirebaseRideRepository(
 
     override suspend fun updateDriverLocation(driverId: String, location: GeoPoint, available: Boolean) {
         firestore.collection("drivers").document(driverId).set(
-            mapOf("location" to location.toMap(), "available" to available, "updatedAt" to FieldValue.serverTimestamp()),
+            mapOf(
+                "location" to location.toMap(),
+                "available" to available,
+                "updatedAt" to FieldValue.serverTimestamp(),
+            ),
         ).await()
         val activeRides = firestore.collection("rides").whereEqualTo("driverId", driverId).get().await()
         activeRides.documents
@@ -234,6 +258,10 @@ private fun DocumentSnapshot.toProfile(fallbackEmail: String) = UserProfile(
     role = enumValueOrDefault(getString("role"), UserRole.RIDER),
     vehicle = getString("vehicle").orEmpty(),
     rating = getDouble("rating") ?: 5.0,
+    vehicleCategory = enumValueOrDefault(
+        getString("vehicleCategory"),
+        if (enumValueOrDefault(getString("role"), UserRole.RIDER) == UserRole.DRIVER) VehicleCategory.STANDARD else VehicleCategory.ANY,
+    ),
 )
 
 private fun DocumentSnapshot.toRide(): Ride? = runCatching {
@@ -250,6 +278,7 @@ private fun DocumentSnapshot.toRide(): Ride? = runCatching {
         status = enumValueOrDefault(getString("status"), RideStatus.SEARCHING),
         createdAtEpochMillis = getLong("createdAtEpochMillis") ?: 0,
         rating = getLong("rating")?.toInt(),
+        vehicleCategory = enumValueOrDefault(getString("vehicleCategory"), VehicleCategory.ANY),
     )
 }.getOrNull()
 

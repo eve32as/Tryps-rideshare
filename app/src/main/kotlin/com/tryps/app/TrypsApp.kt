@@ -54,6 +54,7 @@ import com.tryps.model.Place
 import com.tryps.model.Ride
 import com.tryps.model.RideStatus
 import com.tryps.model.UserRole
+import com.tryps.model.VehicleCategory
 import java.text.NumberFormat
 import java.util.Currency
 
@@ -88,6 +89,8 @@ private fun AuthScreen(demoMode: Boolean, busy: Boolean, viewModel: MainViewMode
     var email by remember { mutableStateOf(if (demoMode) "rider@demo.com" else "") }
     var password by remember { mutableStateOf(if (demoMode) "password" else "") }
     var role by remember { mutableStateOf(UserRole.RIDER) }
+    var vehicleCategory by remember { mutableStateOf(VehicleCategory.STANDARD) }
+    var categoryMenuExpanded by remember { mutableStateOf(false) }
     Column(
         Modifier.fillMaxSize().padding(28.dp),
         verticalArrangement = Arrangement.Center,
@@ -111,10 +114,31 @@ private fun AuthScreen(demoMode: Boolean, busy: Boolean, viewModel: MainViewMode
                     OutlinedButton(onClick = { role = it }, enabled = role != it) { Text(it.name.lowercase().replaceFirstChar(Char::uppercase)) }
                 }
             }
+            if (role == UserRole.DRIVER) {
+                Box {
+                    OutlinedButton(onClick = { categoryMenuExpanded = true }) {
+                        Text("Vehicle: ${vehicleCategory.label()}")
+                    }
+                    DropdownMenu(
+                        expanded = categoryMenuExpanded,
+                        onDismissRequest = { categoryMenuExpanded = false },
+                    ) {
+                        VehicleCategory.entries.filter { it != VehicleCategory.ANY }.forEach { category ->
+                            DropdownMenuItem(
+                                text = { Text(category.label()) },
+                                onClick = {
+                                    vehicleCategory = category
+                                    categoryMenuExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+            }
         }
         Button(
             onClick = {
-                if (register) viewModel.register(name, email, password, role) else viewModel.signIn(email, password)
+                if (register) viewModel.register(name, email, password, role, vehicleCategory) else viewModel.signIn(email, password)
             },
             enabled = !busy,
             modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
@@ -181,13 +205,14 @@ private fun RiderScreen(state: MainUiState, viewModel: MainViewModel) {
             if (searchTarget == false) state.suggestions else emptyList(),
             { destinationQuery = it.name; viewModel.selectPlace(it, false); searchTarget = null },
         )
+        VehicleCategorySelector(state.requestedVehicleCategory, viewModel::selectVehicleCategory)
         if (state.quote == null) {
             Button(viewModel::getQuote, Modifier.fillMaxWidth().padding(vertical = 12.dp)) { Text("See price") }
         } else {
             Card(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
                 Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                     Column {
-                        Text("Standard ride", fontWeight = FontWeight.Bold)
+                        Text("${state.requestedVehicleCategory.label()} ride", fontWeight = FontWeight.Bold)
                         Text("${state.quote.distanceMeters / 1000.0} km · ${state.quote.durationSeconds / 60} min")
                         Text("Simulated payment ·•••• 4242")
                     }
@@ -197,6 +222,35 @@ private fun RiderScreen(state: MainUiState, viewModel: MainViewModel) {
             Button(viewModel::requestRide, Modifier.fillMaxWidth().padding(bottom = 12.dp)) { Text("Request Tryps") }
         }
     }
+}
+
+@Composable
+private fun VehicleCategorySelector(selected: VehicleCategory, onSelect: (VehicleCategory) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        OutlinedButton(onClick = { expanded = true }) {
+            Text("Vehicle preference: ${selected.label()}")
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            VehicleCategory.entries.forEach { category ->
+                DropdownMenuItem(
+                    text = { Text(category.label()) },
+                    onClick = {
+                        onSelect(category)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+private fun VehicleCategory.label(): String = when (this) {
+    VehicleCategory.ANY -> "No preference"
+    VehicleCategory.STANDARD -> "Standard"
+    VehicleCategory.XL -> "XL"
+    VehicleCategory.ACCESSIBLE -> "Accessible"
+    VehicleCategory.LUXURY -> "Luxury"
 }
 
 @Composable
@@ -246,6 +300,7 @@ private fun DriverScreen(state: MainUiState, viewModel: MainViewModel) {
                             )
                         }
                         Text(ride.riderName.ifBlank { "Rider" }, fontWeight = FontWeight.Bold)
+                        Text("Vehicle: ${ride.vehicleCategory.label()}")
                         Text("${ride.pickup.name} → ${ride.destination.name}")
                         Text(money(ride.quote.amountCents, ride.quote.currency))
                         Button({ viewModel.acceptRide(ride.id) }, Modifier.fillMaxWidth()) { Text("Accept ride") }

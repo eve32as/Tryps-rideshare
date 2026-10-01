@@ -2,6 +2,8 @@ package com.tryps.model
 
 enum class UserRole { RIDER, DRIVER }
 
+enum class VehicleCategory { ANY, STANDARD, XL, ACCESSIBLE, LUXURY }
+
 enum class RideStatus {
     SEARCHING, ACCEPTED, DRIVER_ARRIVING, IN_PROGRESS, COMPLETED, CANCELLED
 }
@@ -25,6 +27,7 @@ data class UserProfile(
     val role: UserRole = UserRole.RIDER,
     val vehicle: String = "",
     val rating: Double = 5.0,
+    val vehicleCategory: VehicleCategory = VehicleCategory.STANDARD,
 )
 
 data class RideQuote(
@@ -48,4 +51,5 @@ data class Ride(
     val driverLocation: GeoPoint? = null,
     val rating: Int? = null,
     val pickupEtaSeconds: Int? = null,
+    val vehicleCategory: VehicleCategory = VehicleCategory.ANY,
 )

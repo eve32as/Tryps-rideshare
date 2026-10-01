@@ -4,7 +4,7 @@ const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { defineSecret } = require("firebase-functions/params");
 const { initializeApp } = require("firebase-admin/app");
 const { getFirestore } = require("firebase-admin/firestore");
-const { rankRideRecommendations } = require("./matching");
+const { filterCompatibleRides, rankRideRecommendations } = require("./matching");
 
 initializeApp();
 const googleMapsApiKey = defineSecret("GOOGLE_MAPS_API_KEY");
@@ -94,6 +94,7 @@ exports.getRideRecommendations = onCall({ secrets: [googleMapsApiKey] }, async (
     db.collection("drivers").doc(driverId).get(),
   ]);
   if (profile.get("role") !== "DRIVER") throw new HttpsError("permission-denied", "Only drivers can request ride recommendations");
+  const driverCategory = profile.get("vehicleCategory") || "STANDARD";
   if (!driver.exists || driver.get("available") !== true) {
     throw new HttpsError("failed-precondition", "Go online to receive ride recommendations");
   }
@@ -105,16 +106,22 @@ exports.getRideRecommendations = onCall({ secrets: [googleMapsApiKey] }, async (
   const origin = parsePoint(driver.get("location"));
   const openRides = await db.collection("rides")
     .where("status", "==", "SEARCHING")
-    .limit(20)
+    .limit(100)
     .get();
   const candidates = openRides.docs.map((ride) => {
     try {
-      return { id: ride.id, pickup: parsePoint(ride.get("pickup")?.location) };
+      return {
+        id: ride.id,
+        pickup: parsePoint(ride.get("pickup")?.location),
+        vehicleCategory: ride.get("vehicleCategory") || "ANY",
+      };
     } catch {
       return null;
     }
   }).filter(Boolean);
   if (candidates.length === 0) return { recommendations: [] };
+  const compatibleCandidates = filterCompatibleRides(candidates, driverCategory).slice(0, 20);
+  if (compatibleCandidates.length === 0) return { recommendations: [] };
 
   const response = await fetch("https://routes.googleapis.com/directions/v2:computeRouteMatrix", {
     method: "POST",
@@ -125,7 +132,7 @@ exports.getRideRecommendations = onCall({ secrets: [googleMapsApiKey] }, async (
     },
     body: JSON.stringify({
       origins: [{ waypoint: { location: { latLng: origin } } }],
-      destinations: candidates.map(({ pickup }) => ({ waypoint: { location: { latLng: pickup } } })),
+      destinations: compatibleCandidates.map(({ pickup }) => ({ waypoint: { location: { latLng: pickup } } })),
       travelMode: "DRIVE",
       routingPreference: "TRAFFIC_AWARE",
     }),
@@ -134,7 +141,7 @@ exports.getRideRecommendations = onCall({ secrets: [googleMapsApiKey] }, async (
 
   const matrix = await response.json();
   return {
-    recommendations: rankRideRecommendations(candidates, Array.isArray(matrix) ? matrix : []),
+    recommendations: rankRideRecommendations(compatibleCandidates, Array.isArray(matrix) ? matrix : []),
   };
 });
 

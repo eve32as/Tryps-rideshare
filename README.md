@@ -7,7 +7,7 @@ Tryps is a Kotlin Android rideshare MVP for riders and drivers. It uses Jetpack 
 - Email/password registration and sign-in with rider and driver roles
 - Pickup and destination search, route map, server-calculated quote, and simulated payment
 - Ride request, driver acceptance, trip status, cancellation, history, and ratings
-- Driver availability, location updates, and traffic-aware pickup recommendations
+- Driver vehicle categories, availability, location updates, and traffic-aware pickup recommendations
 - Push-notification service for ride updates
 - Offline-friendly Firestore listeners and a no-credentials demo backend
 - Firestore security rules and server-only Google Routes/Places API access
@@ -65,8 +65,8 @@ workflow can also be started manually from the Actions tab.
 
 ## Data model
 
-- `users/{uid}` stores account role and profile.
+- `users/{uid}` stores account role, profile, and driver vehicle category.
 - `drivers/{uid}` stores availability and latest location.
-- `rides/{rideId}` stores route, server quote, participants, status, and optional rating.
+- `rides/{rideId}` stores route, requested vehicle category, server quote, participants, status, and optional rating.
 
-Ride recommendations are ranked server-side by traffic-aware driving time from an available driver's latest location to each open pickup. Driver ETA and cancellation history, vehicle-category preferences, automatic assignment, notifications, payment processing, and stricter status-transition enforcement remain future dispatch work.
+Ride recommendations are ranked server-side by traffic-aware driving time from an available driver's latest location to compatible open pickups. Drivers select a vehicle category at registration; riders can request a category or choose no preference. Driver ETA/cancellation history, automatic assignment, notifications, payment processing, and stricter status-transition enforcement remain future dispatch work.

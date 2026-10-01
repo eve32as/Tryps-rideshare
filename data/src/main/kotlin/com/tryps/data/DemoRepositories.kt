@@ -9,6 +9,7 @@ import com.tryps.model.RideQuote
 import com.tryps.model.RideStatus
 import com.tryps.model.UserProfile
 import com.tryps.model.UserRole
+import com.tryps.model.VehicleCategory
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,8 +25,8 @@ class DemoAccountRepository : AccountRepository {
         user.value = UserProfile("demo-$role", email.substringBefore("@").replaceFirstChar(Char::uppercase), email, role = role, vehicle = if (role == UserRole.DRIVER) "Silver EV · TRYPS" else "")
     }
 
-    override suspend fun register(name: String, email: String, password: String, role: UserRole) {
-        user.value = UserProfile("demo-${UUID.randomUUID()}", name, email, role = role)
+    override suspend fun register(name: String, email: String, password: String, role: UserRole, vehicleCategory: VehicleCategory) {
+        user.value = UserProfile("demo-${UUID.randomUUID()}", name, email, role = role, vehicleCategory = vehicleCategory)
     }
 
     override suspend fun signOut() {
@@ -62,10 +63,15 @@ class DemoRideRepository : RideRepository {
             }
         }
 
-    override fun observeOpenRides(driverId: String): Flow<List<Ride>> =
+    override fun observeOpenRides(driverId: String, vehicleCategory: VehicleCategory): Flow<List<Ride>> =
         combine(rides, locations) { current, driverLocations ->
             val location = driverLocations[driverId]
-            val openRides = current.filter { it.status == RideStatus.SEARCHING }
+            val openRides = current.filter {
+                it.status == RideStatus.SEARCHING &&
+                    (it.vehicleCategory == VehicleCategory.ANY ||
+                        vehicleCategory == VehicleCategory.ANY ||
+                        it.vehicleCategory == vehicleCategory)
+            }
             if (location == null) {
                 openRides.sortedBy(Ride::createdAtEpochMillis)
             } else {
@@ -81,7 +87,13 @@ class DemoRideRepository : RideRepository {
         return RideQuote(350 + distance / 100 * 18, distanceMeters = distance, durationSeconds = distance / 9)
     }
 
-    override suspend fun request(rider: UserProfile, pickup: Place, destination: Place, quote: RideQuote) {
+    override suspend fun request(
+        rider: UserProfile,
+        pickup: Place,
+        destination: Place,
+        quote: RideQuote,
+        vehicleCategory: VehicleCategory,
+    ) {
         rides.value = listOf(
             Ride(
                 id = UUID.randomUUID().toString(),
@@ -91,6 +103,7 @@ class DemoRideRepository : RideRepository {
                 quote = quote,
                 createdAtEpochMillis = System.currentTimeMillis(),
                 riderName = rider.displayName,
+                vehicleCategory = vehicleCategory,
             ),
         ) + rides.value
     }

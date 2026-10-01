@@ -19,4 +19,17 @@ function rankRideRecommendations(candidates, matrix) {
     a.pickupEtaSeconds - b.pickupEtaSeconds || a.rideId.localeCompare(b.rideId));
 }
 
-module.exports = { rankRideRecommendations };
+function filterCompatibleRides(candidates, driverCategory) {
+  const category = normalizeCategory(driverCategory, "STANDARD");
+  return candidates.filter(({ vehicleCategory }) => {
+    const requestedCategory = normalizeCategory(vehicleCategory, "ANY");
+    return requestedCategory === "ANY" || category === "ANY" || requestedCategory === category;
+  });
+}
+
+function normalizeCategory(value, fallback) {
+  const categories = new Set(["ANY", "STANDARD", "XL", "ACCESSIBLE", "LUXURY"]);
+  return typeof value === "string" && categories.has(value) ? value : fallback;
+}
+
+module.exports = { filterCompatibleRides, rankRideRecommendations };

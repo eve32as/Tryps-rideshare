@@ -13,6 +13,7 @@ import com.tryps.model.RideQuote
 import com.tryps.model.RideStatus
 import com.tryps.model.UserProfile
 import com.tryps.model.UserRole
+import com.tryps.model.VehicleCategory
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,6 +38,7 @@ data class MainUiState(
     val isAvailable: Boolean = false,
     val isBusy: Boolean = false,
     val error: String? = null,
+    val requestedVehicleCategory: VehicleCategory = VehicleCategory.STANDARD,
 )
 
 class MainViewModel(
@@ -62,10 +64,10 @@ class MainViewModel(
         action { accounts.signIn(email, password) }
     }
 
-    fun register(name: String, email: String, password: String, role: UserRole) {
+    fun register(name: String, email: String, password: String, role: UserRole, vehicleCategory: VehicleCategory) {
         if (name.isBlank()) return showError("Enter your name")
         RideValidation.loginError(email, password)?.let { return showError(it) }
-        action { accounts.register(name, email, password, role) }
+        action { accounts.register(name, email, password, role, vehicleCategory) }
     }
 
     fun signOut() = action { accounts.signOut() }
@@ -119,7 +121,11 @@ class MainViewModel(
         val pickup = snapshot.pickup ?: return
         val destination = snapshot.destination ?: return
         val quote = snapshot.quote ?: return
-        action { rides.request(user, pickup, destination, quote) }
+        action { rides.request(user, pickup, destination, quote, snapshot.requestedVehicleCategory) }
+    }
+
+    fun selectVehicleCategory(category: VehicleCategory) {
+        mutableState.update { it.copy(requestedVehicleCategory = category) }
     }
 
     fun acceptRide(rideId: String) {
@@ -169,7 +175,7 @@ class MainViewModel(
                 }
             }
             if (user.role == UserRole.DRIVER) launch {
-                rides.observeOpenRides(user.id).catch { showError(it) }.collect { open ->
+                rides.observeOpenRides(user.id, user.vehicleCategory).catch { showError(it) }.collect { open ->
                     mutableState.update { it.copy(openRides = open) }
                 }
             }

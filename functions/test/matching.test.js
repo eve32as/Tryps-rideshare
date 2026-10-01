@@ -2,7 +2,7 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { rankRideRecommendations } = require("../matching");
+const { filterCompatibleRides, rankRideRecommendations } = require("../matching");
 
 test("ranks rides by traffic-aware pickup ETA", () => {
   const ranked = rankRideRecommendations(
@@ -30,4 +30,27 @@ test("omits unavailable or invalid routes and resolves ETA ties consistently", (
   );
 
   assert.deepEqual(ranked.map(({ rideId }) => rideId), ["a", "b"]);
+});
+
+test("filters out ride categories a driver cannot serve while retaining no-preference rides", () => {
+  const candidates = [
+    { id: "standard", vehicleCategory: "STANDARD" },
+    { id: "accessible", vehicleCategory: "ACCESSIBLE" },
+    { id: "any", vehicleCategory: "ANY" },
+  ];
+
+  assert.deepEqual(
+    filterCompatibleRides(candidates, "STANDARD").map(({ id }) => id),
+    ["standard", "any"],
+  );
+  assert.deepEqual(
+    filterCompatibleRides(candidates, "ACCESSIBLE").map(({ id }) => id),
+    ["accessible", "any"],
+  );
+});
+
+test("treats legacy ride and driver profiles as broadly compatible", () => {
+  const candidates = [{ id: "legacy" }, { id: "luxury", vehicleCategory: "LUXURY" }];
+  assert.deepEqual(filterCompatibleRides(candidates, undefined).map(({ id }) => id), ["legacy"]);
+  assert.deepEqual(filterCompatibleRides(candidates, "ANY").map(({ id }) => id), ["legacy", "luxury"]);
 });
