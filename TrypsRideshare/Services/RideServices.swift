@@ -156,6 +156,16 @@ enum RideAPI {
         )
     }
 
+    static func driverHeartbeat(token: String) async throws -> Bool {
+        let response: DriverAvailabilityResponse = try await send(
+            "/v1/driver/heartbeat",
+            method: "POST",
+            body: EmptyBody(),
+            token: token
+        )
+        return response.available
+    }
+
     static func assignedRides(token: String) async throws -> [DriverRide] {
         let response: DriverRidesResponse = try await send(
             "/v1/driver/rides",

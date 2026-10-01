@@ -45,15 +45,16 @@ The built-in rate limiter uses per-process memory; configure a shared store
 before running multiple API instances.
 
 `PLATFORM_FEE_BPS` is the platform commission in basis points; set this to the
-agreed business rate. `STRIPE_CONNECT_COUNTRY` and `STRIPE_CURRENCY` must match
-the business's supported country and currency. Driver onboarding return and
+agreed business rate. Current sample fares are USD-only; `STRIPE_CONNECT_COUNTRY`
+must match the business's supported country. Driver onboarding return and
 refresh URLs must be HTTPS URLs hosted by your service.
 
 ## Prototype limitations
 
 The server selects the nearest online, onboarded driver within 10 km and
-reserves that driver for the ride. The driver screen polls for assigned rides
-while open; unpaid driver reservations expire after 20 minutes. Push
+reserves that driver for the ride. The driver screen sends a heartbeat and polls
+for assigned rides while open; drivers without a heartbeat for 2 minutes are
+taken offline automatically. Unpaid ride reservations expire after 20 minutes. Push
 notifications, driver identity/safety verification, trip tracking, server-side
 ride-history sync, cancellations/refunds after payment, and fare calculation
 from route distance are not implemented. The fixed sample fare is charged when

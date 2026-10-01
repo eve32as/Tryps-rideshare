@@ -124,8 +124,9 @@ struct ContentView: View {
         }
         .task(id: selectedTab) {
             guard selectedTab == .drive, accountRole == .driver else { return }
+            guard await refreshDriverDashboard() else { return }
             while !Task.isCancelled {
-                guard await refreshDriverDashboard() else { return }
+                guard await pollDriverDashboard() else { return }
                 try? await Task.sleep(for: .seconds(15))
             }
         }
@@ -547,6 +548,28 @@ struct ContentView: View {
             if driverAvailable {
                 locationManager.startTracking()
             }
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    @MainActor
+    private func pollDriverDashboard() async -> Bool {
+        guard let sessionToken, accountRole == .driver else { return false }
+        guard !isDriverLoading else { return true }
+        isDriverLoading = true
+        defer { isDriverLoading = false }
+        do {
+            if driverAvailable {
+                let heartbeatAccepted = try await RideAPI.driverHeartbeat(token: sessionToken)
+                if !heartbeatAccepted {
+                    driverAvailable = false
+                    locationManager.stopTracking()
+                }
+            }
+            driverRides = try await RideAPI.assignedRides(token: sessionToken)
             return true
         } catch {
             errorMessage = error.localizedDescription

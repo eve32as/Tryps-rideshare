@@ -23,8 +23,8 @@ export function readConfig(env = process.env) {
     throw new Error("PLATFORM_FEE_BPS must be an integer between 0 and 5000.");
   }
   const currency = (env.STRIPE_CURRENCY ?? "usd").toLowerCase();
-  if (!/^[a-z]{3}$/.test(currency)) {
-    throw new Error("STRIPE_CURRENCY must be a three-letter ISO currency code.");
+  if (currency !== "usd") {
+    throw new Error("The current sample fares support USD only.");
   }
   for (const name of ["DRIVER_ONBOARDING_RETURN_URL", "DRIVER_ONBOARDING_REFRESH_URL"]) {
     let url;
@@ -57,10 +57,10 @@ export function readConfig(env = process.env) {
       "tryps-comfort": 1820,
       "tryps-xl": 2480,
     },
-    currency: "usd",
     applicationFeeBasisPoints,
     matchingRadiusMeters: 10000,
     paymentReservationMinutes: 20,
+    driverHeartbeatTimeoutSeconds: 120,
     currency,
   };
 }

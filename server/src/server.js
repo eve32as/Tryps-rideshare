@@ -178,15 +178,32 @@ async function createSession(userId, role) {
 
 app.get("/v1/driver/profile", authenticate, requireRole("driver"), asyncRoute(async (req, res) => {
   const result = await pool.query(
-    "SELECT stripe_account_id, available FROM drivers WHERE user_id = $1",
-    [req.user.id],
+    `SELECT stripe_account_id, available,
+            updated_at > now() - ($2::double precision * interval '1 second') AS heartbeat_fresh
+     FROM drivers WHERE user_id = $1`,
+    [req.user.id, config.driverHeartbeatTimeoutSeconds],
   );
   if (!result.rowCount) return res.json({ onboardingComplete: false, available: false });
+  if (result.rows[0].available && !result.rows[0].heartbeat_fresh) {
+    await pool.query("UPDATE drivers SET available = false WHERE user_id = $1", [req.user.id]);
+  }
   const account = await stripe.accounts.retrieve(result.rows[0].stripe_account_id);
   return res.json({
     onboardingComplete: Boolean(account.details_submitted && account.payouts_enabled),
-    available: result.rows[0].available,
+    available: result.rows[0].available && result.rows[0].heartbeat_fresh,
   });
+}));
+
+app.post("/v1/driver/heartbeat", authenticate, requireRole("driver"), asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `UPDATE drivers SET updated_at = now()
+     WHERE user_id = $1
+       AND available = true
+       AND updated_at > now() - ($2::double precision * interval '1 second')
+     RETURNING user_id`,
+    [req.user.id, config.driverHeartbeatTimeoutSeconds],
+  );
+  return res.json({ available: result.rowCount > 0 });
 }));
 
 app.post("/v1/driver/connect-onboarding", authenticate, requireRole("driver"), asyncRoute(async (req, res) => {
@@ -305,6 +322,7 @@ app.post("/v1/rides", authenticate, requireRole("rider"), asyncRoute(async (req,
        FROM drivers
        WHERE available = true
          AND location IS NOT NULL
+         AND updated_at > now() - ($4::double precision * interval '1 second')
          AND ST_DWithin(
            location,
            ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
@@ -313,7 +331,7 @@ app.post("/v1/rides", authenticate, requireRole("rider"), asyncRoute(async (req,
        ORDER BY location <-> ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography
        LIMIT 1
        FOR UPDATE SKIP LOCKED`,
-      [pickup.longitude, pickup.latitude, config.matchingRadiusMeters],
+      [pickup.longitude, pickup.latitude, config.matchingRadiusMeters, config.driverHeartbeatTimeoutSeconds],
     );
     const driver = candidates.rows[0];
     if (!driver) {

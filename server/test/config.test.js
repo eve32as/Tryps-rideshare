@@ -33,6 +33,14 @@ test("validates the platform fee and port", () => {
   );
 });
 
+test("supports only the USD sample fares", () => {
+  assert.throws(
+    () => readConfig({ ...validEnvironment, STRIPE_CURRENCY: "jpy" }),
+    /USD only/,
+  );
+  assert.equal(readConfig(validEnvironment).currency, "usd");
+});
+
 test("rejects placeholder or insecure driver onboarding URLs", () => {
   assert.throws(
     () => readConfig({
