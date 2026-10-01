@@ -4,13 +4,14 @@ const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onDocumentUpdated } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
 const { initializeApp } = require("firebase-admin/app");
-const { FieldValue, getFirestore } = require("firebase-admin/firestore");
+const { FieldValue, Timestamp, getFirestore } = require("firebase-admin/firestore");
 const {
   applyMatchingMetricEvent,
   filterCompatibleRides,
   isValidDriverCategory,
   rankRideRecommendations,
 } = require("./matching");
+const { calculateSurgeMultiplier, distanceMeters } = require("./pricing");
 
 initializeApp();
 const googleMapsApiKey = defineSecret("GOOGLE_MAPS_API_KEY");
@@ -26,6 +27,10 @@ exports.getRideQuote = onCall({ secrets: [googleMapsApiKey] }, async (request) =
   requireAuthentication(request);
   const pickup = parsePoint(request.data?.pickup);
   const destination = parsePoint(request.data?.destination);
+  const db = getFirestore();
+  const userId = request.auth.uid;
+  const profile = await db.collection("users").doc(userId).get();
+  if (profile.get("role") !== "RIDER") throw new HttpsError("permission-denied", "Only riders can request fare quotes");
   const response = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
     method: "POST",
     headers: {
@@ -45,13 +50,100 @@ exports.getRideQuote = onCall({ secrets: [googleMapsApiKey] }, async (request) =
   if (!route) throw new HttpsError("not-found", "No driving route was found");
   const durationSeconds = Number.parseInt(route.duration, 10);
   const distanceMeters = route.distanceMeters;
-  const amountCents = Math.max(
+  if (!Number.isSafeInteger(durationSeconds) || durationSeconds < 0 ||
+      !Number.isSafeInteger(distanceMeters) || distanceMeters < 0) {
+    throw new HttpsError("unavailable", "The route provider returned invalid trip details");
+  }
+  const baseAmountCents = Math.max(
     rateCard.minimumCents,
     rateCard.baseCents +
       Math.ceil(distanceMeters / 1000 * rateCard.perKilometerCents) +
       Math.ceil(durationSeconds / 60 * rateCard.perMinuteCents),
   );
-  return { amountCents, currency: "USD", distanceMeters, durationSeconds, rateVersion: rateCard.version };
+  const nearbyCounts = await getNearbyRideCounts(db, pickup);
+  const surgeMultiplier = calculateSurgeMultiplier(nearbyCounts.demandCount, nearbyCounts.availableDriverCount);
+  const amountCents = Math.ceil(baseAmountCents * surgeMultiplier);
+  const quoteRef = db.collection("users").doc(userId).collection("rideQuotes").doc();
+  await quoteRef.set({
+    userId,
+    pickup,
+    destination,
+    amountCents,
+    baseAmountCents,
+    surgeMultiplier,
+    demandCount: nearbyCounts.demandCount,
+    availableDriverCount: nearbyCounts.availableDriverCount,
+    currency: "USD",
+    distanceMeters,
+    durationSeconds,
+    rateVersion: rateCard.version,
+    createdAt: FieldValue.serverTimestamp(),
+    expiresAt: Timestamp.fromMillis(Date.now() + 5 * 60 * 1000),
+  });
+  return {
+    quoteId: quoteRef.id,
+    amountCents,
+    baseAmountCents,
+    surgeMultiplier,
+    demandCount: nearbyCounts.demandCount,
+    availableDriverCount: nearbyCounts.availableDriverCount,
+    currency: "USD",
+    distanceMeters,
+    durationSeconds,
+    rateVersion: rateCard.version,
+  };
+});
+
+exports.requestRide = onCall(async (request) => {
+  requireAuthentication(request);
+  const userId = request.auth.uid;
+  const quoteId = request.data?.quoteId;
+  const vehicleCategory = request.data?.vehicleCategory;
+  if (typeof quoteId !== "string" || !quoteId || !isValidRequestedCategory(vehicleCategory)) {
+    throw new HttpsError("invalid-argument", "A valid fare quote and vehicle category are required");
+  }
+  const db = getFirestore();
+  const profileRef = db.collection("users").doc(userId);
+  const quoteRef = profileRef.collection("rideQuotes").doc(quoteId);
+  const rideRef = db.collection("rides").doc();
+  await db.runTransaction(async (transaction) => {
+    const [profile, quote] = await Promise.all([
+      transaction.get(profileRef),
+      transaction.get(quoteRef),
+    ]);
+    if (!profile.exists || profile.get("role") !== "RIDER") {
+      throw new HttpsError("permission-denied", "Only riders can request rides");
+    }
+    if (!quote.exists || quote.get("userId") !== userId || quote.get("usedAt")) {
+      throw new HttpsError("failed-precondition", "Fare quote is invalid or has already been used");
+    }
+    const expiresAt = quote.get("expiresAt");
+    if (!expiresAt || expiresAt.toMillis() <= Date.now()) {
+      throw new HttpsError("failed-precondition", "Fare quote has expired; request a new quote");
+    }
+    transaction.create(rideRef, {
+      riderId: userId,
+      riderName: profile.get("displayName") || "",
+      pickup: quote.get("pickup"),
+      destination: quote.get("destination"),
+      quote: {
+        amountCents: quote.get("amountCents"),
+        baseAmountCents: quote.get("baseAmountCents"),
+        surgeMultiplier: quote.get("surgeMultiplier"),
+        demandCount: quote.get("demandCount"),
+        availableDriverCount: quote.get("availableDriverCount"),
+        currency: quote.get("currency"),
+        distanceMeters: quote.get("distanceMeters"),
+        durationSeconds: quote.get("durationSeconds"),
+      },
+      vehicleCategory,
+      status: "SEARCHING",
+      createdAt: FieldValue.serverTimestamp(),
+      createdAtEpochMillis: Date.now(),
+    });
+    transaction.update(quoteRef, { usedAt: FieldValue.serverTimestamp() });
+  });
+  return { rideId: rideRef.id };
 });
 
 exports.searchPlaces = onCall({ secrets: [googleMapsApiKey] }, async (request) => {
@@ -293,6 +385,29 @@ function assertAvailableDriver(profile, driver) {
   }
 }
 
+async function getNearbyRideCounts(db, pickup) {
+  const [rideSnapshot, driverSnapshot] = await Promise.all([
+    db.collection("rides").where("status", "==", "SEARCHING").limit(200).get(),
+    db.collection("drivers").where("available", "==", true).limit(200).get(),
+  ]);
+  const now = Date.now();
+  const isNearby = (location) => {
+    try {
+      return distanceMeters(pickup, parsePoint(location)) <= 5_000;
+    } catch {
+      return false;
+    }
+  };
+  const demandCount = rideSnapshot.docs.filter((ride) => isNearby(ride.get("pickup")?.location)).length;
+  const availableDriverCount = driverSnapshot.docs.filter((driver) => {
+    const updatedAt = driver.get("updatedAt");
+    if (!updatedAt) return false;
+    const ageMillis = now - updatedAt.toMillis();
+    return ageMillis >= 0 && ageMillis <= 120_000 && isNearby(driver.get("location"));
+  }).length;
+  return { demandCount, availableDriverCount };
+}
+
 async function getTrafficAwareEta(origin, destination) {
   const response = await fetch("https://routes.googleapis.com/directions/v2:computeRouteMatrix", {
     method: "POST",
@@ -316,6 +431,10 @@ async function getTrafficAwareEta(origin, destination) {
     throw new HttpsError("not-found", "No driving route to this pickup was found");
   }
   return eta;
+}
+
+function isValidRequestedCategory(category) {
+  return category === "ANY" || isValidDriverCategory(category);
 }
 
 function requireAuthentication(request) {

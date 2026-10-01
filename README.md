@@ -5,7 +5,7 @@ Tryps is a Kotlin Android rideshare MVP for riders and drivers. It uses Jetpack 
 ## Features
 
 - Email/password registration and sign-in with rider and driver roles
-- Pickup and destination search, route map, server-calculated quote, and simulated payment
+- Pickup and destination search, route map, demand-aware server fare quotes, and simulated payment
 - Ride request, category-aware driver acceptance, trip status, cancellation, history, and ratings
 - Driver vehicle categories, availability, location updates, and traffic-aware pickup recommendations
 - Push-notification service for ride updates
@@ -20,7 +20,7 @@ Tryps is a Kotlin Android rideshare MVP for riders and drivers. It uses Jetpack 
 | `domain` | Repository contracts and business validation |
 | `data` | Firebase and in-memory demo repository implementations |
 | `core:model` | Shared immutable models |
-| `functions` | Authenticated ride recommendations, quote, and place-search Cloud Functions |
+| `functions` | Authenticated ride recommendations, locked demand-aware quotes, ride requests, and place-search Cloud Functions |
 
 ## Requirements
 
@@ -69,4 +69,4 @@ workflow can also be started manually from the Actions tab.
 - `drivers/{uid}` stores availability and latest location.
 - `rides/{rideId}` stores route, requested vehicle category, server quote, participants, status, pickup ETA at acceptance, and optional rating.
 
-Ride recommendations use a deterministic reliability-adjusted score based on traffic-aware pickup ETA, driver cancellation/completion history, observed ETA error, and vehicle-category compatibility. Trusted Cloud Functions record cancellations, completions, and pickup-time error samples using idempotent events. This is a heuristic rather than a trained ML model; training infrastructure and automatic multi-driver assignment remain future work.
+Ride recommendations use a deterministic reliability-adjusted score based on traffic-aware pickup ETA, driver cancellation/completion history, observed ETA error, and vehicle-category compatibility. Trusted Cloud Functions record cancellations, completions, and pickup-time error samples using idempotent events. Fare quotes apply capped 1.00×/1.25×/1.50× demand multipliers based on nearby open rides and recently available drivers; each rider-bound quote expires after five minutes and can be used for one ride request. This is a heuristic rather than trained ML; weather forecasts, trained models, and automatic multi-driver assignment remain future work.

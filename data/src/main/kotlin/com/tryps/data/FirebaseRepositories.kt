@@ -220,6 +220,12 @@ class FirebaseRideRepository(
             currency = result["currency"] as? String ?: "USD",
             distanceMeters = (result["distanceMeters"] as Number).toInt(),
             durationSeconds = (result["durationSeconds"] as Number).toInt(),
+            baseAmountCents = (result["baseAmountCents"] as? Number)?.toInt()
+                ?: (result["amountCents"] as Number).toInt(),
+            surgeMultiplier = (result["surgeMultiplier"] as? Number)?.toDouble() ?: 1.0,
+            demandCount = (result["demandCount"] as? Number)?.toInt() ?: 0,
+            availableDriverCount = (result["availableDriverCount"] as? Number)?.toInt() ?: 0,
+            quoteId = result["quoteId"] as? String ?: error("Invalid quote response"),
         )
     }
 
@@ -230,20 +236,10 @@ class FirebaseRideRepository(
         quote: RideQuote,
         vehicleCategory: VehicleCategory,
     ) {
-        val document = firestore.collection("rides").document()
-        document.set(
-            mapOf(
-                "riderId" to rider.id,
-                "riderName" to rider.displayName,
-                "pickup" to pickup.toMap(),
-                "destination" to destination.toMap(),
-                "quote" to quote.toMap(),
-                "vehicleCategory" to vehicleCategory.name,
-                "status" to RideStatus.SEARCHING.name,
-                "createdAt" to FieldValue.serverTimestamp(),
-                "createdAtEpochMillis" to System.currentTimeMillis(),
-            ),
-        ).await()
+        require(!quote.quoteId.isNullOrBlank()) { "A valid server quote is required to request a ride" }
+        functions.getHttpsCallable("requestRide")
+            .call(mapOf("quoteId" to quote.quoteId, "vehicleCategory" to vehicleCategory.name))
+            .await()
     }
 
     override suspend fun accept(rideId: String, driver: UserProfile) {
@@ -328,8 +324,6 @@ private fun DocumentSnapshot.toRide(): Ride? = runCatching {
 
 private fun Place.toMap() = mapOf("name" to name, "address" to address, "location" to location.toMap())
 private fun GeoPoint.toMap() = mapOf("latitude" to latitude, "longitude" to longitude)
-private fun RideQuote.toMap() = mapOf("amountCents" to amountCents, "currency" to currency, "distanceMeters" to distanceMeters, "durationSeconds" to durationSeconds)
-
 private fun Any?.toPlace(): Place {
     val map = this as? Map<*, *> ?: return Place()
     return Place(map["name"] as? String ?: "", map["address"] as? String ?: "", map["location"].toGeoPoint())
@@ -343,10 +337,14 @@ private fun Any?.toGeoPoint(): GeoPoint {
 private fun Any?.toQuote(): RideQuote {
     val map = this as? Map<*, *> ?: return RideQuote()
     return RideQuote(
-        (map["amountCents"] as? Number)?.toInt() ?: 0,
-        map["currency"] as? String ?: "USD",
-        (map["distanceMeters"] as? Number)?.toInt() ?: 0,
-        (map["durationSeconds"] as? Number)?.toInt() ?: 0,
+        amountCents = (map["amountCents"] as? Number)?.toInt() ?: 0,
+        currency = map["currency"] as? String ?: "USD",
+        distanceMeters = (map["distanceMeters"] as? Number)?.toInt() ?: 0,
+        durationSeconds = (map["durationSeconds"] as? Number)?.toInt() ?: 0,
+        baseAmountCents = (map["baseAmountCents"] as? Number)?.toInt() ?: (map["amountCents"] as? Number)?.toInt() ?: 0,
+        surgeMultiplier = (map["surgeMultiplier"] as? Number)?.toDouble() ?: 1.0,
+        demandCount = (map["demandCount"] as? Number)?.toInt() ?: 0,
+        availableDriverCount = (map["availableDriverCount"] as? Number)?.toInt() ?: 0,
     )
 }
 

@@ -43,6 +43,11 @@ data class RideQuote(
     val currency: String = "USD",
     val distanceMeters: Int = 0,
     val durationSeconds: Int = 0,
+    val baseAmountCents: Int = amountCents,
+    val surgeMultiplier: Double = 1.0,
+    val demandCount: Int = 0,
+    val availableDriverCount: Int = 0,
+    val quoteId: String? = null,
 )
 
 data class Ride(

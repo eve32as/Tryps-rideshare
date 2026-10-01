@@ -214,6 +214,17 @@ private fun RiderScreen(state: MainUiState, viewModel: MainViewModel) {
                     Column {
                         Text("${state.requestedVehicleCategory.label()} ride", fontWeight = FontWeight.Bold)
                         Text("${state.quote.distanceMeters / 1000.0} km · ${state.quote.durationSeconds / 60} min")
+                        Text("Base fare: ${money(state.quote.baseAmountCents, state.quote.currency)}")
+                        if (state.quote.surgeMultiplier > 1.0) {
+                            Text(
+                                "Demand adjustment ×${state.quote.surgeMultiplier} · " +
+                                    "${state.quote.demandCount} nearby rides / " +
+                                    "${state.quote.availableDriverCount} available drivers",
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        } else {
+                            Text("No demand adjustment · ×1.0")
+                        }
                         Text("Simulated payment ·•••• 4242")
                     }
                     Text(money(state.quote.amountCents, state.quote.currency), style = MaterialTheme.typography.titleLarge)
