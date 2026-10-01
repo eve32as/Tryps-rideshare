@@ -10,11 +10,24 @@ private struct DriverOffer: Identifiable {
     let dropOff: CLLocationCoordinate2D
     let rideType: String
 }
+
+private struct DriverDemandZone: Identifiable {
+    let id: String
+    let latitude: Double
+    let longitude: Double
+    let demandBand: String
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+}
+
 @MainActor
 private final class FirebaseDriverStore: ObservableObject {
     static let shared = FirebaseDriverStore()
 
     @Published private(set) var offers: [DriverOffer] = []
+    @Published private(set) var demandZones: [DriverDemandZone] = []
     @Published private(set) var applicationSubmitted = false
     @Published private(set) var activeRideId: String?
     @Published private(set) var activeRideStatus: String?
@@ -148,6 +161,7 @@ private final class FirebaseDriverStore: ObservableObject {
         listeningUserID = nil
         listeningAsDriver = false
         offers = []
+        demandZones = []
         applicationSubmitted = false
         activeRideId = nil
         activeRideStatus = nil
@@ -188,6 +202,12 @@ private final class FirebaseDriverStore: ObservableObject {
     func setAvailability(_ available: Bool, location: CLLocationCoordinate2D?) async {
         guard available == false || location != nil else {
             errorMessage = "Allow location and tap the location button before going online."
+            return
+        }
+        if available, let location,
+           CLLocation(latitude: 37.7749, longitude: -122.4194)
+            .distance(from: CLLocation(latitude: location.latitude, longitude: location.longitude)) > 30_000 {
+            errorMessage = "Go online within the 30 km San Francisco service area."
             return
         }
         isWorking = true
@@ -235,11 +255,42 @@ private final class FirebaseDriverStore: ObservableObject {
 
     func updateLocation(_ location: CLLocationCoordinate2D) async {
         do {
-            _ = try await call("updateDriverLocation", data: [
+            let result = try await call("updateDriverLocation", data: [
                 "location": ["latitude": location.latitude, "longitude": location.longitude],
             ])
+            if result["available"] as? Bool == false {
+                isAvailable = false
+                errorMessage = "You left the service area and were taken offline."
+            }
         } catch {
             errorMessage = "Couldn’t refresh your location. Ride offers may pause."
+        }
+    }
+
+    func refreshDemandHeatmap() async {
+        guard isAvailable else {
+            demandZones = []
+            return
+        }
+        do {
+            let result = try await call("getDriverDemandHeatmap", data: [:])
+            guard let values = result["zones"] as? [[String: Any]] else {
+                throw DriverServiceError.invalidResponse
+            }
+            demandZones = values.compactMap { value in
+                guard let id = value["geohash"] as? String,
+                      let latitude = (value["latitude"] as? NSNumber)?.doubleValue,
+                      let longitude = (value["longitude"] as? NSNumber)?.doubleValue,
+                      let demandBand = value["demandBand"] as? String else { return nil }
+                return DriverDemandZone(
+                    id: id,
+                    latitude: latitude,
+                    longitude: longitude,
+                    demandBand: demandBand
+                )
+            }
+        } catch {
+            errorMessage = "Couldn’t refresh nearby demand."
         }
     }
 
@@ -382,10 +433,15 @@ struct FirebaseDriverView: View {
                 return
             }
             locationManager.startUpdatingLocation()
+            var lastDemandRefresh = Date.distantPast
             while !Task.isCancelled {
                 if let location = locationManager.location,
                    abs(Date().timeIntervalSince(location.timestamp)) <= 120 {
                     await driver.updateLocation(location.coordinate)
+                }
+                if Date().timeIntervalSince(lastDemandRefresh) >= 300 {
+                    await driver.refreshDemandHeatmap()
+                    lastDemandRefresh = Date()
                 }
                 try? await Task.sleep(for: .seconds(60))
             }
@@ -487,6 +543,30 @@ struct FirebaseDriverView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(driver.isAvailable ? TrypsStyle.muted : TrypsStyle.green)
                 .disabled(driver.isWorking)
+            }
+
+            if driver.isAvailable {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("NEARBY DEMAND")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(TrypsStyle.muted)
+                    if driver.demandZones.isEmpty {
+                        Text("No nearby zone currently has enough active requests to display.")
+                            .font(.caption)
+                            .foregroundStyle(TrypsStyle.muted)
+                    } else {
+                        DriverDemandHeatmap(
+                            zones: driver.demandZones,
+                            center: locationManager.location?.coordinate
+                                ?? CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194)
+                        )
+                        .frame(height: 170)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        Text("Approximate 30-minute demand · zones with fewer than 3 requests are hidden")
+                            .font(.caption2)
+                            .foregroundStyle(TrypsStyle.muted)
+                    }
+                }
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -598,6 +678,37 @@ struct FirebaseDriverView: View {
         navigation.start(rideID: rideID, pickup: pickup, dropOff: dropOff, status: status)
     }
 }
+
+private struct DriverDemandHeatmap: View {
+    let zones: [DriverDemandZone]
+    let center: CLLocationCoordinate2D
+
+    var body: some View {
+        Map(
+            initialPosition: .region(
+                MKCoordinateRegion(
+                    center: center,
+                    span: MKCoordinateSpan(latitudeDelta: 0.12, longitudeDelta: 0.12)
+                )
+            )
+        ) {
+            ForEach(zones) { zone in
+                Annotation("", coordinate: zone.coordinate, anchor: .center) {
+                    Circle()
+                        .fill(Color.orange.opacity(0.75))
+                        .frame(width: 48, height: 48)
+                        .overlay {
+                            Text(zone.demandBand)
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(.white)
+                        }
+                }
+            }
+        }
+        .mapControlVisibility(.hidden)
+    }
+}
+
 #elseif canImport(SwiftUI)
 import SwiftUI
 

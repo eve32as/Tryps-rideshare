@@ -14,6 +14,12 @@ const MIN_TRIP_DISTANCE_METERS = 50;
 const DRIVER_LOCATION_MAX_AGE_MS = 2 * 60 * 1000;
 const DRIVER_LOCATION_FUTURE_TOLERANCE_MS = 30 * 1000;
 const MAX_SURGE_MULTIPLIER = 1.5;
+const SERVICE_AREA_CENTER = Object.freeze({ latitude: 37.7749, longitude: -122.4194 });
+const SERVICE_AREA_RADIUS_KM = 30;
+const DEMAND_HEATMAP_MIN_COUNT = 3;
+const DEMAND_HEATMAP_MAX_AGE_MS = 30 * 60 * 1000;
+const DEMAND_HEATMAP_RADIUS_KM = 15;
+const GEOHASH_ALPHABET = "0123456789bcdefghjkmnpqrstuvwxyz";
 
 function validCoordinate(value) {
   return value !== null &&
@@ -36,6 +42,59 @@ function distanceInKilometers(first, second) {
     Math.sin(longitudeDelta / 2) ** 2;
   const boundedValue = Math.min(1, Math.max(0, value));
   return 6371 * 2 * Math.atan2(Math.sqrt(boundedValue), Math.sqrt(1 - boundedValue));
+}
+
+function isWithinServiceArea(coordinate) {
+  return validCoordinate(coordinate) &&
+    distanceInKilometers(SERVICE_AREA_CENTER, coordinate) <= SERVICE_AREA_RADIUS_KM;
+}
+
+function geohashCellCenter(hash) {
+  if (typeof hash !== "string" || hash.length !== 5 ||
+      [...hash].some((character) => !GEOHASH_ALPHABET.includes(character))) {
+    return null;
+  }
+  let latitude = [-90, 90];
+  let longitude = [-180, 180];
+  let longitudeBit = true;
+  for (const character of hash) {
+    const value = GEOHASH_ALPHABET.indexOf(character);
+    for (let bit = 4; bit >= 0; bit -= 1) {
+      const interval = longitudeBit ? longitude : latitude;
+      const midpoint = (interval[0] + interval[1]) / 2;
+      if ((value >> bit) & 1) interval[0] = midpoint;
+      else interval[1] = midpoint;
+      longitudeBit = !longitudeBit;
+    }
+  }
+  return {
+    latitude: (latitude[0] + latitude[1]) / 2,
+    longitude: (longitude[0] + longitude[1]) / 2,
+  };
+}
+
+function aggregateDemandHeatmap(rides, driverLocation, nowMillis) {
+  if (!validCoordinate(driverLocation) || !Number.isFinite(nowMillis)) return [];
+  const counts = new Map();
+  for (const ride of rides) {
+    if (!["searching_driver", "dispatching", "offered"].includes(ride.status) ||
+        !Number.isFinite(ride.updatedAtMillis) ||
+        nowMillis - ride.updatedAtMillis < 0 ||
+        nowMillis - ride.updatedAtMillis > DEMAND_HEATMAP_MAX_AGE_MS ||
+        !geohashCellCenter(ride.demandZone)) continue;
+    counts.set(ride.demandZone, (counts.get(ride.demandZone) ?? 0) + 1);
+  }
+  return [...counts.entries()].flatMap(([geohash, count]) => {
+    const center = geohashCellCenter(geohash);
+    if (count < DEMAND_HEATMAP_MIN_COUNT ||
+        !isWithinServiceArea(center) ||
+        distanceInKilometers(driverLocation, center) > DEMAND_HEATMAP_RADIUS_KM) return [];
+    return [{
+      geohash,
+      ...center,
+      demandBand: count <= 5 ? "3–5" : count <= 10 ? "6–10" : "11+",
+    }];
+  }).sort((first, second) => first.geohash.localeCompare(second.geohash));
 }
 
 function calculateQuote(pickup, dropOff, rideType, routeDistanceMeters, surgeMultiplier = 1) {
@@ -136,6 +195,7 @@ function rankNearbyDrivers(drivers, pickup, radiusKm, nowMillis, preferences = {
     .filter((driver) => driver.available === true && driver.verified === true &&
       matchesRidePreferences(driver, preferences) &&
       validCoordinate(driver.location) &&
+      isWithinServiceArea(driver.location) &&
       isFreshDriverLocation(driver.locationUpdatedAtMillis, nowMillis))
     .map((driver) => ({
       ...driver,
@@ -163,10 +223,13 @@ function canTransitionRide(current, next) {
 module.exports = {
   RIDE_TYPES,
   calculateQuote,
+  aggregateDemandHeatmap,
   canTransitionRide,
   calculateDemandSurgeMultiplier,
   distanceInKilometers,
   isFreshDriverLocation,
+  isWithinServiceArea,
+  geohashCellCenter,
   matchesRidePreferences,
   normalizeDriverRidePreferences,
   normalizeRidePreferences,

@@ -13,10 +13,12 @@ const Stripe = require("stripe");
 
 const {
   RIDE_TYPES,
+  aggregateDemandHeatmap,
   calculateQuote,
   calculateDemandSurgeMultiplier,
   canTransitionRide,
   isFreshDriverLocation,
+  isWithinServiceArea,
   matchesRidePreferences,
   normalizeDriverRidePreferences,
   normalizeRidePreferences,
@@ -226,6 +228,12 @@ exports.createRideQuote = onCall({
   const rideTypes = request.data?.rideTypes;
   if (!validCoordinate(pickup) || !validCoordinate(dropOff)) {
     throw new HttpsError("invalid-argument", "Choose valid pickup and drop-off locations.");
+  }
+  if (!isWithinServiceArea(pickup) || !isWithinServiceArea(dropOff)) {
+    throw new HttpsError(
+      "out-of-range",
+      "Pickup and drop-off must be within the San Francisco service area."
+    );
   }
   if (!Array.isArray(rideTypes) || rideTypes.length === 0 || rideTypes.length > 3 ||
       new Set(rideTypes).size !== rideTypes.length ||
@@ -610,6 +618,12 @@ exports.setDriverAvailability = onCall({ region: REGION }, async (request) => {
   if (typeof available !== "boolean" || (available && !validCoordinate(location))) {
     throw new HttpsError("invalid-argument", "A valid availability and location are required.");
   }
+  if (available && !isWithinServiceArea(location)) {
+    throw new HttpsError(
+      "out-of-range",
+      "Go online within the San Francisco service area."
+    );
+  }
 
   const driverRef = db.collection("drivers").doc(uid);
   const driverSnapshot = await driverRef.get();
@@ -626,6 +640,43 @@ exports.setDriverAvailability = onCall({ region: REGION }, async (request) => {
     updatedAt: FieldValue.serverTimestamp(),
   });
   return { available };
+});
+
+exports.getDriverDemandHeatmap = onCall({ region: REGION }, async (request) => {
+  const uid = requireDriver(request);
+  const driverSnapshot = await db.collection("drivers").doc(uid).get();
+  if (!driverSnapshot.exists || driverSnapshot.data().verified !== true ||
+      driverSnapshot.data().available !== true) {
+    throw new HttpsError("failed-precondition", "Go online to view nearby demand.");
+  }
+  const driver = driverSnapshot.data();
+  const now = Date.now();
+  if (!isWithinServiceArea(driver.location) ||
+      !isFreshDriverLocation(driver.locationUpdatedAt?.toMillis(), now)) {
+    return { zones: [] };
+  }
+  const cutoff = Timestamp.fromMillis(now - 30 * 60_000);
+  const activeStatuses = ["searching_driver", "dispatching", "offered"];
+  const snapshots = await Promise.all(activeStatuses.map((status) =>
+    db.collection("rides")
+      .where("status", "==", status)
+      .where("updatedAt", ">=", cutoff)
+      .orderBy("updatedAt", "desc")
+      .limit(100)
+      .get()
+  ));
+  const rides = snapshots.flatMap((snapshot) => snapshot.docs.map((document) => {
+    const data = document.data();
+    return {
+      status: data.status,
+      demandZone: data.demandZone,
+      updatedAtMillis: data.updatedAt?.toMillis(),
+    };
+  }));
+  return {
+    zones: aggregateDemandHeatmap(rides, driver.location, now),
+    updatedAt: now,
+  };
 });
 
 exports.setDriverRidePreferences = onCall({ region: REGION }, async (request) => {
@@ -690,22 +741,29 @@ exports.updateDriverLocation = onCall({ region: REGION }, async (request) => {
 
   const driverRef = db.collection("drivers").doc(uid);
   let updated = false;
+  const withinServiceArea = isWithinServiceArea(location);
   await db.runTransaction(async (transaction) => {
     const snapshot = await transaction.get(driverRef);
     if (!snapshot.exists || snapshot.data().verified !== true || snapshot.data().available !== true) {
       throw new HttpsError("failed-precondition", "Go online to update your driver location.");
     }
     const lastUpdatedAt = snapshot.data().locationUpdatedAt?.toMillis();
-    if (Number.isFinite(lastUpdatedAt) && Date.now() - lastUpdatedAt < 10_000) return;
+    if (withinServiceArea && Number.isFinite(lastUpdatedAt) &&
+        Date.now() - lastUpdatedAt < 10_000) return;
     transaction.update(driverRef, {
       location,
       geohash: geohashForLocation([location.latitude, location.longitude]),
       locationUpdatedAt: FieldValue.serverTimestamp(),
+      ...(!withinServiceArea ? { available: false } : {}),
       updatedAt: FieldValue.serverTimestamp(),
     });
     updated = true;
   });
-  return { updated };
+  return {
+    updated,
+    withinServiceArea,
+    available: withinServiceArea,
+  };
 });
 
 exports.claimRideOffer = onCall({ region: REGION }, async (request) => {

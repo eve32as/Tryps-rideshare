@@ -16,6 +16,17 @@ private enum TrypsLayout {
     static let overlappingBookingPanelHeightFraction: CGFloat = 0.70
 }
 
+private enum TrypsServiceArea {
+    static let center = CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194)
+    static let radiusMeters: CLLocationDistance = 30_000
+
+    static func contains(_ coordinate: CLLocationCoordinate2D) -> Bool {
+        CLLocation(latitude: center.latitude, longitude: center.longitude)
+            .distance(from: CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude))
+            <= radiusMeters
+    }
+}
+
 private struct Destination: Identifiable {
     let id: String
     let name: String
@@ -203,6 +214,12 @@ struct ContentView: View {
               CLLocationCoordinate2DIsValid(destination.coordinate) else {
             route = nil
             routeError = "Invalid pickup or destination location"
+            return
+        }
+        guard TrypsServiceArea.contains(pickupCoordinate),
+              TrypsServiceArea.contains(destination.coordinate) else {
+            route = nil
+            routeError = "Trips must start and end within the 30 km San Francisco service area."
             return
         }
 
@@ -809,6 +826,8 @@ private struct RideMapView: View {
 
     var body: some View {
         Map(position: $cameraPosition) {
+            MapCircle(center: TrypsServiceArea.center, radius: TrypsServiceArea.radiusMeters)
+                .stroke(TrypsStyle.green.opacity(0.55), lineWidth: 2)
             if let pickup {
                 Annotation("Pickup", coordinate: pickup) {
                     mapMarker(symbol: "location.fill", tint: TrypsStyle.green)

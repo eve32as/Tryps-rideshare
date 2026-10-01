@@ -7,9 +7,12 @@ const { geohashForLocation, geohashQueryBounds } = require("geofire-common");
 const {
   calculateQuote,
   calculateDemandSurgeMultiplier,
+  aggregateDemandHeatmap,
   canTransitionRide,
   distanceInKilometers,
   isFreshDriverLocation,
+  isWithinServiceArea,
+  geohashCellCenter,
   matchesRidePreferences,
   normalizeDriverRidePreferences,
   normalizeRidePreferences,
@@ -22,6 +25,49 @@ test("validates coordinates and rejects values outside geographic bounds", () =>
   assert.equal(validCoordinate({ latitude: 91, longitude: 0 }), false);
   assert.equal(validCoordinate({ latitude: 0, longitude: Infinity }), false);
   assert.equal(validCoordinate(null), false);
+});
+
+test("enforces the configured San Francisco service-area geofence", () => {
+  assert.equal(isWithinServiceArea({ latitude: 37.7749, longitude: -122.4194 }), true);
+  assert.equal(isWithinServiceArea({ latitude: 37.6213, longitude: -122.3790 }), true);
+  assert.equal(isWithinServiceArea({ latitude: 38.5816, longitude: -121.4944 }), false);
+  assert.equal(isWithinServiceArea({ latitude: 91, longitude: 0 }), false);
+});
+
+test("aggregates only recent coarse demand zones above the privacy threshold", () => {
+  const now = 1_800_000_000_000;
+  const driverLocation = { latitude: 37.7749, longitude: -122.4194 };
+  const nearbyZone = geohashForLocation([driverLocation.latitude, driverLocation.longitude]).slice(0, 5);
+  const twoRequestZone = geohashForLocation([37.79, -122.40]).slice(0, 5);
+  const rides = [
+    ...Array.from({ length: 3 }, () => ({
+      status: "searching_driver",
+      demandZone: nearbyZone,
+      updatedAtMillis: now - 60_000,
+    })),
+    ...Array.from({ length: 2 }, () => ({
+      status: "offered",
+      demandZone: twoRequestZone,
+      updatedAtMillis: now - 60_000,
+    })),
+    {
+      status: "dispatching",
+      demandZone: nearbyZone,
+      updatedAtMillis: now - 31 * 60_000,
+    },
+    {
+      status: "completed",
+      demandZone: nearbyZone,
+      updatedAtMillis: now,
+    },
+  ];
+  const zones = aggregateDemandHeatmap(rides, driverLocation, now);
+  assert.equal(zones.length, 1);
+  assert.equal(zones[0].geohash, nearbyZone);
+  assert.equal(zones[0].demandBand, "3–5");
+  assert.ok(Math.abs(zones[0].latitude - driverLocation.latitude) < 0.1);
+  assert.ok(Math.abs(zones[0].longitude - driverLocation.longitude) < 0.1);
+  assert.equal(geohashCellCenter("invalid"), null);
 });
 
 test("calculates a server-owned fare quote for a supported ride", () => {
