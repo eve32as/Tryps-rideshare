@@ -6,7 +6,7 @@ A SwiftUI rideshare app prototype for iPhone and iPad. The booking screen uses A
 
 Open `TrypsRideshare.xcodeproj` in Xcode, select an iPhone or iPad simulator, and run the `TrypsRideshare` scheme. The iOS app requires iOS 17 or later.
 
-The project also includes a Swift package so its non-Apple fallback can be built and tested from the command line:
+The project also includes a Swift package. On macOS 14 or later with a compatible Swift 6.4 toolchain, `swift test` builds the SwiftUI app target; on Linux it builds the command-line fallback and runs the portable tests:
 
 ```sh
 swift test

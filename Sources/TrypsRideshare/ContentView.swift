@@ -173,7 +173,6 @@ struct ContentView: View {
         guard let pickupCoordinate else {
             route = nil
             routeError = nil
-            isCalculatingRoute = false
             cameraPosition = .region(
                 MKCoordinateRegion(
                     center: destination.coordinate,
@@ -186,7 +185,6 @@ struct ContentView: View {
               CLLocationCoordinate2DIsValid(destination.coordinate) else {
             route = nil
             routeError = "Choose a pickup and destination"
-            isCalculatingRoute = false
             return
         }
 
@@ -548,7 +546,6 @@ private struct DestinationPicker: View {
                     List(searchResults) { destination in
                         Button {
                             onSelect(destination)
-                            dismiss()
                         } label: {
                             HStack(spacing: 14) {
                                 Image(systemName: destination.symbol)
@@ -735,6 +732,7 @@ private final class PickupLocationManager: NSObject, ObservableObject, CLLocatio
         self.location = location
         pickupLabel = "Your location"
         Task {
+            geocoder.cancelGeocode()
             guard let placemark = try? await geocoder.reverseGeocodeLocation(location),
                   let name = placemark.first?.name,
                   self.location?.coordinate.latitude == location.coordinate.latitude,
