@@ -24,6 +24,14 @@ test("requires a sufficiently strong session signing secret", () => {
   );
 });
 
+test("requires server-side Google Routes credentials", () => {
+  const { GOOGLE_ROUTES_API_KEY: _key, ...environmentWithoutRoutesKey } = validEnvironment;
+  assert.throws(
+    () => readConfig(environmentWithoutRoutesKey),
+    /GOOGLE_ROUTES_API_KEY/,
+  );
+});
+
 test("validates the platform fee and port", () => {
   assert.throws(
     () => readConfig({ ...validEnvironment, PLATFORM_FEE_BPS: "5001" }),

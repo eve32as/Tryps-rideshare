@@ -27,7 +27,7 @@ export function calculateRideFare(routeDistanceMeters, rideType, pricing) {
   }
   const routeDistanceKm = routeDistanceMeters / 1000;
   if (routeDistanceKm > 500) return undefined;
-  const estimatedDistanceKm = Math.round(routeDistanceKm * 10) / 10;
+  const estimatedDistanceKm = Math.max(0.1, Math.round(routeDistanceKm * 10) / 10);
   const distanceChargeCents = Math.round(estimatedDistanceKm * pricing.perKmCents);
   const subtotalCents = pricing.baseCents + distanceChargeCents;
   const multipliedFareCents = Math.round(subtotalCents * rideTypeMultiplier);
