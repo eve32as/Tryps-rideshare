@@ -11,12 +11,6 @@ private enum TrypsStyle {
     static let line = Color(red: 0.91, green: 0.93, blue: 0.92)
 }
 
-private enum TrypsCurrency {
-    static func format(_ amount: Int) -> String {
-        amount.formatted(.currency(code: "USD").precision(.fractionLength(0)))
-    }
-}
-
 private struct Destination: Identifiable {
     let id: String
     let name: String
@@ -162,7 +156,7 @@ struct ContentView: View {
         .alert("Your ride is on its way", isPresented: $isRideRequested) {
             Button("Done", role: .cancel) { }
         } message: {
-            Text("\(selectedRide.name) to \(destination.name) · about \(TrypsCurrency.format(fare(for: selectedRide)))")
+            Text("\(selectedRide.name) to \(destination.name) · about \(BookingFare.formatted(fare(for: selectedRide)))")
         }
     }
 
@@ -179,6 +173,7 @@ struct ContentView: View {
         guard let pickupCoordinate else {
             route = nil
             routeError = nil
+            isCalculatingRoute = false
             cameraPosition = .region(
                 MKCoordinateRegion(
                     center: destination.coordinate,
@@ -359,7 +354,7 @@ struct ContentView: View {
                     Text("Confirm \(selectedRide.name)")
                         .font(.system(size: 16, weight: .bold))
                     Spacer()
-                    Text(TrypsCurrency.format(fare(for: selectedRide)))
+                    Text(BookingFare.formatted(fare(for: selectedRide)))
                         .font(.system(size: 16, weight: .bold))
                     Image(systemName: "arrow.right")
                         .font(.system(size: 13, weight: .bold))
@@ -465,7 +460,11 @@ struct ContentView: View {
     }
 
     private func fare(for ride: Ride) -> Int {
-        ride.fare + destination.fareSurcharge + (selectedPickup?.fareSurcharge ?? 0)
+        BookingFare.total(
+            baseFare: ride.fare,
+            pickupSurcharge: selectedPickup?.fareSurcharge ?? 0,
+            dropOffSurcharge: destination.fareSurcharge
+        )
     }
 }
 
@@ -502,7 +501,7 @@ private struct RideOptionRow: View {
 
                 Spacer()
 
-                Text(TrypsCurrency.format(fare))
+                Text(BookingFare.formatted(fare))
                     .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(TrypsStyle.ink)
 
@@ -520,7 +519,7 @@ private struct RideOptionRow: View {
             .contentShape(RoundedRectangle(cornerRadius: 15))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(ride.name), \(ride.detail), \(ride.seats) seats, \(TrypsCurrency.format(fare))")
+        .accessibilityLabel("\(ride.name), \(ride.detail), \(ride.seats) seats, \(BookingFare.formatted(fare))")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
@@ -605,7 +604,8 @@ private struct DestinationPicker: View {
             }
         }
 
-        guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
             searchResults = Destination.suggestions
             searchFailed = false
             return
@@ -617,7 +617,7 @@ private struct DestinationPicker: View {
             guard !Task.isCancelled, activeSearchToken == searchToken else { return }
 
             let request = MKLocalSearch.Request()
-            request.naturalLanguageQuery = searchText
+            request.naturalLanguageQuery = query
             if let center = searchRegionCenter {
                 request.region = MKCoordinateRegion(
                     center: center,
@@ -711,7 +711,6 @@ private final class PickupLocationManager: NSObject, ObservableObject, CLLocatio
         pickupLabel = "Finding your location…"
         switch manager.authorizationStatus {
         case .authorizedAlways, .authorizedWhenInUse:
-            pickupLabel = "Finding your location…"
             manager.requestLocation()
         case .notDetermined:
             manager.requestWhenInUseAuthorization()

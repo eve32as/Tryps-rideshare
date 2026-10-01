@@ -9,6 +9,7 @@
 		A10000000000000000000001 /* TrypsRideshare.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000011 /* TrypsRideshare.swift */; };
 		A10000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000012 /* ContentView.swift */; };
 		A10000000000000000000003 /* BookingReadiness.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000014 /* BookingReadiness.swift */; };
+		A10000000000000000000004 /* BookingFare.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000015 /* BookingFare.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -16,6 +17,7 @@
 		A10000000000000000000012 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A10000000000000000000013 /* TrypsRideshare.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TrypsRideshare.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000014 /* BookingReadiness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookingReadiness.swift; sourceTree = "<group>"; };
+		A10000000000000000000015 /* BookingFare.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookingFare.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -42,6 +44,7 @@
 				A10000000000000000000011 /* TrypsRideshare.swift */,
 				A10000000000000000000012 /* ContentView.swift */,
 				A10000000000000000000014 /* BookingReadiness.swift */,
+				A10000000000000000000015 /* BookingFare.swift */,
 			);
 			path = Sources/TrypsRideshare;
 			sourceTree = "<group>";
@@ -118,6 +121,7 @@
 				A10000000000000000000001 /* TrypsRideshare.swift in Sources */,
 				A10000000000000000000002 /* ContentView.swift in Sources */,
 				A10000000000000000000003 /* BookingReadiness.swift in Sources */,
+				A10000000000000000000004 /* BookingFare.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

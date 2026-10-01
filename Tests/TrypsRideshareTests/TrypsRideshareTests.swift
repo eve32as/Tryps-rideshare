@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import TrypsRideshare
 
@@ -32,4 +33,10 @@ import Testing
         hasRoute: true,
         isCalculatingRoute: true
     ))
+}
+
+@Test func fareIncludesBothStopSurchargesAndFormatsAsCurrency() {
+    let total = BookingFare.total(baseFare: 18, pickupSurcharge: 4, dropOffSurcharge: 24)
+    #expect(total == 46)
+    #expect(BookingFare.formatted(total, locale: Locale(identifier: "en_US")) == "$46")
 }
