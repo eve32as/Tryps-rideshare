@@ -17,12 +17,29 @@ private struct Destination: Identifiable {
     let subtitle: String
     let symbol: String
     let coordinate: CLLocationCoordinate2D
+    let fareSurcharge: Int
+
+    init(
+        id: String,
+        name: String,
+        subtitle: String,
+        symbol: String,
+        coordinate: CLLocationCoordinate2D,
+        fareSurcharge: Int = 0
+    ) {
+        self.id = id
+        self.name = name
+        self.subtitle = subtitle
+        self.symbol = symbol
+        self.coordinate = coordinate
+        self.fareSurcharge = fareSurcharge
+    }
 
     static let suggestions = [
         Destination(id: "mission", name: "Mission Dolores Park", subtitle: "Dolores St, San Francisco", symbol: "leaf", coordinate: CLLocationCoordinate2D(latitude: 37.7596, longitude: -122.4269)),
-        Destination(id: "sfo", name: "San Francisco Airport", subtitle: "San Francisco International", symbol: "airplane", coordinate: CLLocationCoordinate2D(latitude: 37.6213, longitude: -122.3790)),
+        Destination(id: "sfo", name: "San Francisco Airport", subtitle: "San Francisco International", symbol: "airplane", coordinate: CLLocationCoordinate2D(latitude: 37.6213, longitude: -122.3790), fareSurcharge: 24),
         Destination(id: "ferry", name: "Ferry Building", subtitle: "1 Ferry Building, San Francisco", symbol: "water.waves", coordinate: CLLocationCoordinate2D(latitude: 37.7955, longitude: -122.3937)),
-        Destination(id: "chase", name: "Chase Center", subtitle: "1 Warriors Way, San Francisco", symbol: "basketball", coordinate: CLLocationCoordinate2D(latitude: 37.7680, longitude: -122.3877)),
+        Destination(id: "chase", name: "Chase Center", subtitle: "1 Warriors Way, San Francisco", symbol: "basketball", coordinate: CLLocationCoordinate2D(latitude: 37.7680, longitude: -122.3877), fareSurcharge: 4),
         Destination(id: "painted", name: "Painted Ladies", subtitle: "Steiner St, San Francisco", symbol: "house", coordinate: CLLocationCoordinate2D(latitude: 37.7761, longitude: -122.4329)),
     ]
 }
@@ -59,6 +76,7 @@ struct ContentView: View {
     @State private var route: MKRoute?
     @State private var routeError: String?
     @State private var isCalculatingRoute = false
+    @State private var activeRouteRequestToken: UUID?
     @State private var cameraPosition: MapCameraPosition = .region(
         MKCoordinateRegion(
             center: CLLocationCoordinate2D(latitude: 37.7596, longitude: -122.4269),
@@ -111,7 +129,7 @@ struct ContentView: View {
             locationManager.requestLocation()
         }
         .task(id: routeRequestID) {
-            await calculateRoute(for: routeRequestID)
+            await calculateRoute()
         }
         .sheet(item: $editingStop) { stop in
             DestinationPicker(
@@ -133,28 +151,31 @@ struct ContentView: View {
         .alert("Your ride is on its way", isPresented: $isRideRequested) {
             Button("Done", role: .cancel) { }
         } message: {
-            Text("\(selectedRide.name) to \(destination.name) · about \(selectedRide.fare) dollars")
+            Text("\(selectedRide.name) to \(destination.name) · about \(fare(for: selectedRide)) dollars")
         }
     }
 
-    private func calculateRoute(for requestID: String) async {
+    private func calculateRoute() async {
+        let requestToken = UUID()
+        activeRouteRequestToken = requestToken
+        defer {
+            if activeRouteRequestToken == requestToken {
+                isCalculatingRoute = false
+                activeRouteRequestToken = nil
+            }
+        }
+
         guard let pickupCoordinate,
               CLLocationCoordinate2DIsValid(pickupCoordinate),
               CLLocationCoordinate2DIsValid(destination.coordinate) else {
             route = nil
             routeError = "Choose a pickup and destination"
-            isCalculatingRoute = false
             return
         }
 
         route = nil
         isCalculatingRoute = true
         routeError = nil
-        defer {
-            if requestID == routeRequestID {
-                isCalculatingRoute = false
-            }
-        }
 
         let request = MKDirections.Request()
         request.source = MKMapItem(placemark: MKPlacemark(coordinate: pickupCoordinate))
@@ -426,7 +447,7 @@ struct ContentView: View {
     }
 
     private func fare(for ride: Ride) -> Int {
-        ride.fare + (destination.id == "sfo" ? 24 : destination.id == "chase" ? 4 : 0)
+        ride.fare + destination.fareSurcharge
     }
 }
 
@@ -577,12 +598,12 @@ private struct DestinationPicker: View {
 
             let response = try await MKLocalSearch(request: request).start()
             guard !Task.isCancelled else { return }
-            searchResults = response.mapItems.compactMap { item in
+            searchResults = response.mapItems.enumerated().compactMap { index, item in
                 guard let name = item.name else { return nil }
                 let coordinate = item.placemark.coordinate
                 guard CLLocationCoordinate2DIsValid(coordinate) else { return nil }
                 return Destination(
-                    id: "\(coordinate.latitude),\(coordinate.longitude)",
+                    id: "\(name)-\(coordinate.latitude),\(coordinate.longitude)-\(index)",
                     name: name,
                     subtitle: item.placemark.title ?? "",
                     symbol: "mappin.and.ellipse",
