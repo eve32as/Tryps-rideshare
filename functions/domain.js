@@ -1,16 +1,16 @@
 "use strict";
 
 const RIDE_TYPES = Object.freeze({
-  everyday: { label: "Everyday", baseFareCents: 800, centsPerKm: 180 },
-  comfort: { label: "Comfort", baseFareCents: 1200, centsPerKm: 240 },
-  xl: { label: "XL", baseFareCents: 1600, centsPerKm: 300 },
+  everyday: { label: "Everyday", baseFareCents: 250, centsPerKm: 125 },
+  comfort: { label: "Comfort", baseFareCents: 400, centsPerKm: 175 },
+  xl: { label: "XL", baseFareCents: 600, centsPerKm: 225 },
 });
 
-const PRICING_VERSION = 1;
-const ROUTE_DISTANCE_FACTOR = 1.25;
-const BOOKING_FEE_CENTS = 200;
-const MINIMUM_FARE_CENTS = 1100;
-const MAX_TRIP_DISTANCE_KM = 200;
+const PRICING_VERSION = 2;
+const BOOKING_FEE_CENTS = 150;
+const MINIMUM_FARE_CENTS = 500;
+const MAX_TRIP_DISTANCE_METERS = 200_000;
+const MIN_TRIP_DISTANCE_METERS = 50;
 const DRIVER_LOCATION_MAX_AGE_MS = 2 * 60 * 1000;
 const DRIVER_LOCATION_FUTURE_TOLERANCE_MS = 30 * 1000;
 
@@ -37,28 +37,28 @@ function distanceInKilometers(first, second) {
   return 6371 * 2 * Math.atan2(Math.sqrt(boundedValue), Math.sqrt(1 - boundedValue));
 }
 
-function calculateQuote(pickup, dropOff, rideType) {
+function calculateQuote(pickup, dropOff, rideType, routeDistanceMeters) {
   if (!validCoordinate(pickup) || !validCoordinate(dropOff)) {
     throw new TypeError("Pickup and drop-off must be valid coordinates.");
   }
   const type = RIDE_TYPES[rideType];
   if (!type) throw new TypeError("Unsupported ride type.");
 
-  const straightLineDistanceKm = distanceInKilometers(pickup, dropOff);
-  if (straightLineDistanceKm < 0.05 ||
-      straightLineDistanceKm * ROUTE_DISTANCE_FACTOR > MAX_TRIP_DISTANCE_KM) {
+  if (!Number.isSafeInteger(routeDistanceMeters) ||
+      routeDistanceMeters < MIN_TRIP_DISTANCE_METERS ||
+      routeDistanceMeters > MAX_TRIP_DISTANCE_METERS) {
     throw new RangeError("The trip distance is outside the supported range.");
   }
-  const distanceKm = Math.round(straightLineDistanceKm * ROUTE_DISTANCE_FACTOR * 10) / 10;
-  const distanceFareCents = Math.ceil(type.centsPerKm * distanceKm);
+  const distanceKm = routeDistanceMeters / 1000;
+  const distanceFareCents = Math.ceil(type.centsPerKm * routeDistanceMeters / 1000);
   const fareBeforeMinimumCents = type.baseFareCents + distanceFareCents + BOOKING_FEE_CENTS;
   const minimumFareAdjustmentCents = Math.max(0, MINIMUM_FARE_CENTS - fareBeforeMinimumCents);
   return {
     rideType,
     rideLabel: type.label,
     pricingVersion: PRICING_VERSION,
-    distanceKm,
-    straightLineDistanceKm: Math.round(straightLineDistanceKm * 10) / 10,
+    routeDistanceMeters,
+    distanceKm: Math.round(distanceKm * 10) / 10,
     baseFareCents: type.baseFareCents,
     distanceFareCents,
     bookingFeeCents: BOOKING_FEE_CENTS,

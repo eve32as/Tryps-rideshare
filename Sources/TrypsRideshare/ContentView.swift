@@ -348,7 +348,8 @@ struct ContentView: View {
                                 ride: ride,
                                 fare: quote?.formattedAmount,
                                 detail: quote.map {
-                                    "\($0.distanceKm.formatted(.number.precision(.fractionLength(1)))) estimated km"
+                                    let minutes = max(1, Int(($0.estimatedDurationSeconds / 60.0).rounded()))
+                                    return "\($0.distanceKm.formatted(.number.precision(.fractionLength(1)))) route km · \(minutes) min"
                                 } ?? "Waiting for quote",
                                 isSelected: ride == selectedRide
                             ) {
@@ -364,7 +365,7 @@ struct ContentView: View {
                             Text(quote.formattedFareBreakdown)
                                 .font(.caption)
                                 .foregroundStyle(TrypsStyle.muted)
-                            Text("Modeled distance estimate; actual routes and fares may vary.")
+                            Text("Based on a driving route; traffic and final trip may change the fare.")
                                 .font(.caption2)
                                 .foregroundStyle(TrypsStyle.muted)
                         }

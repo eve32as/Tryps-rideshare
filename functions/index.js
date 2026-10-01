@@ -12,17 +12,20 @@ const logger = require("firebase-functions/logger");
 const Stripe = require("stripe");
 
 const {
+  RIDE_TYPES,
   calculateQuote,
   canTransitionRide,
   isFreshDriverLocation,
   rankNearbyDrivers,
   validCoordinate,
 } = require("./domain");
+const { RouteLookupError, getDrivingRoute } = require("./routes");
 
 initializeApp();
 const db = getFirestore();
 const REGION = "us-central1";
 const DRIVER_MATCH_RADIUS_KM = 15;
+const GOOGLE_ROUTES_API_KEY = defineSecret("GOOGLE_ROUTES_API_KEY");
 const STRIPE_SECRET_KEY = defineSecret("STRIPE_SECRET_KEY");
 const STRIPE_WEBHOOK_SECRET = defineSecret("STRIPE_WEBHOOK_SECRET");
 const STRIPE_PUBLISHABLE_KEY = defineString("STRIPE_PUBLISHABLE_KEY", { default: "" });
@@ -52,13 +55,6 @@ function requireAdmin(request) {
     throw new HttpsError("permission-denied", "Administrator access is required.");
   }
   return uid;
-}
-
-function parseRideType(data) {
-  if (!data || typeof data.rideType !== "string") {
-    throw new HttpsError("invalid-argument", "Choose a ride type.");
-  }
-  return data.rideType;
 }
 
 async function createDriverOffers(rideId, ride) {
@@ -161,29 +157,69 @@ async function createDriverOffers(rideId, ride) {
   });
 }
 
-exports.createRideQuote = onCall({ region: REGION }, async (request) => {
+exports.createRideQuote = onCall({
+  region: REGION,
+  secrets: [GOOGLE_ROUTES_API_KEY],
+}, async (request) => {
   const uid = authenticatedUser(request);
   const pickup = request.data?.pickup;
   const dropOff = request.data?.dropOff;
-  let quote;
-  try {
-    quote = calculateQuote(pickup, dropOff, parseRideType(request.data));
-  } catch (error) {
-    throw new HttpsError("invalid-argument", error.message);
+  const rideTypes = request.data?.rideTypes;
+  if (!validCoordinate(pickup) || !validCoordinate(dropOff)) {
+    throw new HttpsError("invalid-argument", "Choose valid pickup and drop-off locations.");
+  }
+  if (!Array.isArray(rideTypes) || rideTypes.length === 0 || rideTypes.length > 3 ||
+      new Set(rideTypes).size !== rideTypes.length ||
+      rideTypes.some((rideType) => typeof rideType !== "string" ||
+        !Object.hasOwn(RIDE_TYPES, rideType))) {
+    throw new HttpsError("invalid-argument", "Choose valid ride options.");
   }
 
-  const quoteId = randomUUID();
-  const expiresAt = Timestamp.fromMillis(Date.now() + 5 * 60_000);
-  await db.collection("rideQuotes").doc(quoteId).create({
-    uid,
-    pickup,
-    dropOff,
-    ...quote,
-    status: "available",
-    createdAt: FieldValue.serverTimestamp(),
-    expiresAt,
+  let route;
+  try {
+    route = await getDrivingRoute(
+      pickup,
+      dropOff,
+      GOOGLE_ROUTES_API_KEY.value()
+    );
+  } catch (error) {
+    logger.warn("Driving route lookup failed", { error: error.message });
+    throw new HttpsError(
+      "unavailable",
+      "A driving route is unavailable right now. Check the locations and try again."
+    );
+  }
+
+  const quotes = rideTypes.map((rideType) => {
+    let fare;
+    try {
+      fare = calculateQuote(pickup, dropOff, rideType, route.distanceMeters);
+    } catch (error) {
+      throw new HttpsError("invalid-argument", error.message);
+    }
+    return {
+      quoteId: randomUUID(),
+      ...fare,
+      estimatedDurationSeconds: route.durationSeconds,
+    };
   });
-  return { quoteId, ...quote, expiresAt: expiresAt.toMillis() };
+  const batch = db.batch();
+  const expiresAt = Timestamp.fromMillis(Date.now() + 5 * 60_000);
+  for (const quote of quotes) {
+    batch.set(db.collection("rideQuotes").doc(quote.quoteId), {
+      uid,
+      pickup,
+      dropOff,
+      ...quote,
+      status: "available",
+      createdAt: FieldValue.serverTimestamp(),
+      expiresAt,
+    });
+  }
+  await batch.commit();
+  return {
+    quotes: quotes.map((quote) => ({ ...quote, expiresAt: expiresAt.toMillis() })),
+  };
 });
 
 exports.createRideBooking = onCall({ region: REGION }, async (request) => {
@@ -205,6 +241,11 @@ exports.createRideBooking = onCall({ region: REGION }, async (request) => {
     if (quote.expiresAt.toMillis() <= Date.now()) {
       throw new HttpsError("deadline-exceeded", "The ride quote expired. Request a new quote.");
     }
+    if (quote.pricingVersion !== 2 ||
+        !Number.isSafeInteger(quote.routeDistanceMeters) ||
+        !Number.isSafeInteger(quote.estimatedDurationSeconds)) {
+      throw new HttpsError("failed-precondition", "This quote uses outdated pricing. Request a new quote.");
+    }
 
     transaction.create(rideRef, {
       riderUid: uid,
@@ -216,7 +257,8 @@ exports.createRideBooking = onCall({ region: REGION }, async (request) => {
       rideLabel: quote.rideLabel,
       pricingVersion: quote.pricingVersion,
       distanceKm: quote.distanceKm,
-      straightLineDistanceKm: quote.straightLineDistanceKm,
+      routeDistanceMeters: quote.routeDistanceMeters,
+      estimatedDurationSeconds: quote.estimatedDurationSeconds,
       baseFareCents: quote.baseFareCents,
       distanceFareCents: quote.distanceFareCents,
       bookingFeeCents: quote.bookingFeeCents,

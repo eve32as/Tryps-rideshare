@@ -18,7 +18,7 @@ The app requests location access while in use to suggest the pickup point. Picku
 
 The iOS app uses Firebase Apple SDK 12.19.2 and Stripe PaymentSheet. The backend uses Firebase Admin/Cloud Functions on Node.js 22 and Stripe's server SDK. Configure your own Firebase and Stripe projects before using account, quote, booking, payment, or driver features:
 
-1. Create a Firebase project and register an iOS app with bundle identifier `com.tryps.rideshare`.
+1. Create a Firebase project and register an iOS app with bundle identifier `com.tryps.rideshare`. Enable the **Routes API** in the linked Google Cloud project and attach billing/quotas.
 2. Enable **Email/Password** in Authentication and create a Cloud Firestore database.
 3. Download `GoogleService-Info.plist`, add it to `TrypsRideshare.xcodeproj`, and include it in the app target. The file is git-ignored; never commit it.
 4. Install the Firebase CLI, authenticate it, and deploy the backend and database rules:
@@ -28,12 +28,12 @@ The iOS app uses Firebase Apple SDK 12.19.2 and Stripe PaymentSheet. The backend
    firebase deploy --only firestore:rules,firestore:indexes,functions --project YOUR_FIREBASE_PROJECT_ID
    ```
 
-   Cloud Functions deploy prompts for `STRIPE_PUBLISHABLE_KEY` if it is not already configured. Use a Stripe **test** publishable key for development.
-5. Set the Stripe secret key and webhook signing secret with Secret Manager. In Stripe, add a webhook endpoint for the deployed `stripeWebhook` function and subscribe to `payment_intent.succeeded` and `payment_intent.payment_failed`, then set its signing secret:
+   On first deploy, provide `GOOGLE_ROUTES_API_KEY` and `STRIPE_SECRET_KEY` when prompted for the function secrets, and set `STRIPE_PUBLISHABLE_KEY` to your Stripe **test** publishable key. Restrict the Google key to Routes API, monitor quotas, and never put it in the app.
+5. In Stripe, add a webhook endpoint for the deployed `stripeWebhook` function and subscribe to `payment_intent.succeeded` and `payment_intent.payment_failed`. Set its signing secret with Secret Manager and redeploy Functions:
 
    ```sh
-   firebase functions:secrets:set STRIPE_SECRET_KEY --project YOUR_FIREBASE_PROJECT_ID
    firebase functions:secrets:set STRIPE_WEBHOOK_SECRET --project YOUR_FIREBASE_PROJECT_ID
+   firebase deploy --only functions --project YOUR_FIREBASE_PROJECT_ID
    ```
 
    Redeploy Functions after setting or rotating secrets. Keep all keys out of source control; `.env*`, `GoogleService-Info.plist`, and local credentials are ignored.
@@ -63,8 +63,18 @@ swift test
 
 SwiftUI, MapKit, Firebase Apple SDK, and Stripe PaymentSheet require Xcode for a native iOS build; `swift test` on Linux exercises only the portable Swift code and tests.
 
-### Pricing and matching
+### Route pricing and matching
 
-The server owns a versioned USD rate card in `functions/domain.js`: Everyday $8.00 + $1.80/km, Comfort $12.00 + $2.40/km, and XL $16.00 + $3.00/km, plus a $2.00 booking fee and $11.00 minimum fare. It models distance as 1.25 times straight-line distance, then returns a fare breakdown; this is an estimate, not a navigation route or guaranteed final fare. The rate card is capped at 200 estimated kilometers. Change and review rates on the server before deploying pricing changes.
+The server requests a driving route from Google Routes API and calculates all ride options from that route's exact distance in meters (rounded up to the next cent); it never accepts a client-provided fare or distance. A single route request prices all displayed ride classes. Route lookup errors fail quote creation rather than silently falling back to straight-line pricing. Quotes expire after five minutes and store route distance and estimated duration with the fare.
+
+The version 2 USD rate card in `functions/domain.js` is:
+
+| Ride | Base | Per route km |
+| --- | ---: | ---: |
+| Everyday | $2.50 | $1.25 |
+| Comfort | $4.00 | $1.75 |
+| XL | $6.00 | $2.25 |
+
+All rides add a $1.50 booking fee and have a $5.00 minimum fare. The quote returns and displays the base, route-distance charge, booking fee, and any minimum-fare adjustment. These are proposed MVP rates, not market-validated or jurisdiction-approved; review them before live use. Route duration/distance is an estimate and the completed trip may differ.
 
 Driver matching queries Firestore geohash bounds within 15 km, filters to approved/available drivers with a location updated in the last two minutes, ranks by exact great-circle distance, and sends offers to up to ten nearest drivers. Offers expire after one minute; a scheduled Function retries unmatched or expired rides. The driver app refreshes its location while open and online. This is a bounded MVP dispatcher: it does not account for road ETA, traffic, driver capacity beyond availability, location spoofing, or guaranteed delivery. Validate the pricing and dispatch model, location/privacy disclosures, legal terms, and payment configuration before production use.

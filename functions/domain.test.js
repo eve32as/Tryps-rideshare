@@ -24,33 +24,56 @@ test("calculates a server-owned fare quote for a supported ride", () => {
   const quote = calculateQuote(
     { latitude: 37.7749, longitude: -122.4194 },
     { latitude: 37.784, longitude: -122.409 },
-    "everyday"
+    "everyday",
+    2_500
   );
   assert.equal(quote.rideType, "everyday");
   assert.equal(quote.currency, "usd");
-  assert.equal(quote.pricingVersion, 1);
-  assert.ok(quote.distanceKm > quote.straightLineDistanceKm);
+  assert.equal(quote.pricingVersion, 2);
+  assert.equal(quote.routeDistanceMeters, 2_500);
+  assert.equal(quote.distanceKm, 2.5);
   assert.equal(
     quote.amountCents,
     quote.baseFareCents + quote.distanceFareCents +
       quote.bookingFeeCents + quote.minimumFareAdjustmentCents
   );
-  assert.ok(quote.amountCents >= 1100);
-  assert.equal(quote.bookingFeeCents, 200);
-  assert.ok(quote.distanceFareCents > 0);
-  assert.throws(() => calculateQuote({ latitude: 0, longitude: 0 }, { latitude: 0, longitude: 0 }, "everyday"), RangeError);
-  assert.throws(() => calculateQuote({ latitude: 0, longitude: 0 }, { latitude: 1, longitude: 1 }, "luxury"), TypeError);
+  assert.equal(quote.amountCents, 713);
+  assert.equal(quote.baseFareCents, 250);
+  assert.equal(quote.distanceFareCents, 313);
+  assert.equal(quote.bookingFeeCents, 150);
+  assert.equal(quote.minimumFareAdjustmentCents, 0);
   assert.throws(
-    () => calculateQuote({ latitude: 0, longitude: 0 }, { latitude: 0, longitude: 2 }, "everyday"),
+    () => calculateQuote({ latitude: 0, longitude: 0 }, { latitude: 0, longitude: 0 }, "everyday", 0),
     RangeError
   );
-  const shortTrip = calculateQuote(
+  assert.throws(
+    () => calculateQuote({ latitude: 0, longitude: 0 }, { latitude: 1, longitude: 1 }, "luxury", 1000),
+    TypeError
+  );
+  assert.throws(
+    () => calculateQuote({ latitude: 0, longitude: 0 }, { latitude: 0, longitude: 2 }, "everyday", 200_001),
+    RangeError
+  );
+  assert.throws(
+    () => calculateQuote({ latitude: 0, longitude: 0 }, { latitude: 0, longitude: 1 }, "everyday", 150.5),
+    RangeError
+  );
+  const minimumFare = calculateQuote(
     { latitude: 37.7749, longitude: -122.4194 },
     { latitude: 37.7755, longitude: -122.4194 },
-    "everyday"
+    "everyday",
+    200
   );
-  assert.equal(shortTrip.amountCents, 1100);
-  assert.ok(shortTrip.minimumFareAdjustmentCents > 0);
+  assert.equal(minimumFare.amountCents, 500);
+  assert.equal(minimumFare.minimumFareAdjustmentCents, 75);
+  assert.equal(
+    calculateQuote({ latitude: 0, longitude: 0 }, { latitude: 0, longitude: 1 }, "comfort", 10_000).amountCents,
+    2_300
+  );
+  assert.equal(
+    calculateQuote({ latitude: 0, longitude: 0 }, { latitude: 0, longitude: 1 }, "xl", 10_000).amountCents,
+    3_000
+  );
 });
 
 test("matches only verified, available, recently located drivers within radius", () => {
