@@ -167,8 +167,12 @@ struct ContentView: View {
             }
         }
 
-        guard let pickupCoordinate,
-              CLLocationCoordinate2DIsValid(pickupCoordinate),
+        guard let pickupCoordinate else {
+            route = nil
+            routeError = nil
+            return
+        }
+        guard CLLocationCoordinate2DIsValid(pickupCoordinate),
               CLLocationCoordinate2DIsValid(destination.coordinate) else {
             route = nil
             routeError = "Choose a pickup and destination"
@@ -522,7 +526,7 @@ private struct DestinationPicker: View {
             Group {
                 if searchResults.isEmpty && !isSearching {
                     ContentUnavailableView(
-                        "No places found",
+                        searchFailed ? "Search unavailable" : "No places found",
                         systemImage: searchFailed ? "wifi.exclamationmark" : "magnifyingglass",
                         description: Text(searchFailed ? "Check your connection and try again." : "Try a different search.")
                     )
@@ -594,6 +598,9 @@ private struct DestinationPicker: View {
 
         isSearching = true
         do {
+            try await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled, activeSearchToken == searchToken else { return }
+
             let request = MKLocalSearch.Request()
             request.naturalLanguageQuery = searchText
             if let center = searchRegionCenter {
