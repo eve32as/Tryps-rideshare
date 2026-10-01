@@ -1,5 +1,7 @@
 import SwiftData
 import SwiftUI
+import MapKit
+import StripePaymentSheet
 
 private enum AppTab {
     case ride
@@ -40,11 +42,19 @@ private enum TrypsStyle {
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \RideBooking.requestedAt, order: .reverse) private var bookings: [RideBooking]
+    @StateObject private var locationManager = PickupLocationManager()
 
     @State private var selectedTab = AppTab.ride
     @State private var selectedRideID = RideOption.all[0].id
     @State private var pickup = "Current location"
     @State private var destination = ""
+    @State private var pickupCoordinate: CLLocationCoordinate2D?
+    @State private var destinationCoordinate: CLLocationCoordinate2D?
+    @State private var sessionToken = SessionStore.loadToken()
+    @State private var isSignInPresented = false
+    @State private var isRequestingRide = false
+    @State private var errorMessage: String?
+    @State private var pendingPayment: PendingPayment?
     @State private var receipt: BookingReceipt?
 
     private var selectedRide: RideOption {
@@ -70,6 +80,48 @@ struct ContentView: View {
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: $isSignInPresented) {
+            AppleSignInSheet {
+                sessionToken = SessionStore.loadToken()
+            }
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
+        }
+        .sheet(item: $pendingPayment) { payment in
+            PaymentSheetPresenter(clientSecret: payment.clientSecret) { result in
+                handlePaymentResult(result, payment: payment)
+            }
+            .ignoresSafeArea()
+        }
+        .alert("Tryps", isPresented: Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { errorMessage = nil }
+        } message: {
+            Text(errorMessage ?? "")
+        }
+        .onAppear {
+            locationManager.requestLocation()
+        }
+        .onReceive(locationManager.$coordinate.compactMap { $0 }) { coordinate in
+            if pickup == "Current location" || locationManager.address == pickup {
+                pickupCoordinate = coordinate
+            }
+        }
+        .onReceive(locationManager.$address.compactMap { $0 }) { address in
+            if pickup == "Current location" || locationManager.address == pickup {
+                pickup = address
+            }
+        }
+        .onChange(of: pickup) { _, newValue in
+            if newValue != locationManager.address {
+                pickupCoordinate = nil
+            }
+        }
+        .onChange(of: destination) { _, _ in
+            destinationCoordinate = nil
+        }
     }
 
     private var header: some View {
@@ -89,13 +141,17 @@ struct ContentView: View {
             Spacer()
 
             Button {
-                selectedTab = .activity
+                isSignInPresented = true
             } label: {
-                Image(systemName: "person.crop.circle.fill")
+                Image(systemName: sessionToken == nil ? "person.crop.circle.fill" : "person.crop.circle.badge.checkmark")
                     .font(.system(size: 30))
                     .symbolRenderingMode(.palette)
                     .foregroundStyle(TrypsStyle.accent, Color.white)
-                    .accessibilityLabel("Open ride activity")
+                    .accessibilityLabel(sessionToken == nil ? "Sign in" : "Account signed in")
+            }
+            .buttonStyle(.plain)
+            .accessibilityAction {
+                isSignInPresented = true
             }
         }
         .padding(.horizontal, 22)
@@ -116,10 +172,14 @@ struct ContentView: View {
                         .foregroundStyle(TrypsStyle.muted)
                 }
 
-                RouteMapPreview()
+                RouteMapPreview(
+                    pickupCoordinate: pickupCoordinate,
+                    destinationCoordinate: destinationCoordinate,
+                    userCoordinate: locationManager.coordinate
+                )
                     .frame(height: 190)
                     .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                    .accessibilityLabel("Map preview showing a suggested route")
+                    .accessibilityLabel("Map showing current pickup and destination")
 
                 routeFields
                 ridePicker
@@ -129,11 +189,17 @@ struct ContentView: View {
             .padding(.bottom, 18)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            Button(action: requestRide) {
+            Button {
+                Task { await requestRide() }
+            } label: {
                 HStack {
-                    Image(systemName: "car.fill")
+                    if isRequestingRide {
+                        ProgressView().tint(.white)
+                    } else {
+                        Image(systemName: "car.fill")
                         .font(.system(size: 16, weight: .semibold))
-                    Text("Request \(selectedRide.name)")
+                    }
+                    Text(isRequestingRide ? "Finding a driver…" : "Request \(selectedRide.name)")
                         .font(.system(size: 16, weight: .semibold))
                     Spacer()
                     Text(selectedRide.price)
@@ -147,8 +213,8 @@ struct ContentView: View {
                 .frame(height: 56)
                 .background(TrypsStyle.accent, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
-            .disabled(destination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .opacity(destination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.55 : 1)
+            .disabled(isRequestingRide || destinationCoordinate == nil || pickupCoordinate == nil)
+            .opacity(destinationCoordinate == nil || pickupCoordinate == nil ? 0.55 : 1)
             .padding(.horizontal, 20)
             .padding(.top, 10)
             .padding(.bottom, 8)
@@ -158,7 +224,9 @@ struct ContentView: View {
 
     private var routeFields: some View {
         VStack(spacing: 0) {
-            routeField(symbol: "circle.fill", tint: TrypsStyle.accent, placeholder: "Pickup location", text: $pickup)
+            routeField(symbol: "circle.fill", tint: TrypsStyle.accent, placeholder: "Pickup location", text: $pickup) {
+                Task { await resolvePickup() }
+            }
             HStack(spacing: 10) {
                 Rectangle()
                     .fill(TrypsStyle.line)
@@ -170,14 +238,22 @@ struct ContentView: View {
             }
             .padding(.leading, 18)
             .padding(.trailing, 16)
-            routeField(symbol: "mappin.and.ellipse", tint: Color(red: 0.83, green: 0.40, blue: 0.25), placeholder: "Where are you going?", text: $destination)
+            routeField(symbol: "mappin.and.ellipse", tint: Color(red: 0.83, green: 0.40, blue: 0.25), placeholder: "Where are you going?", text: $destination) {
+                Task { await resolveDestination() }
+            }
         }
         .padding(.vertical, 5)
         .background(.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(TrypsStyle.line.opacity(0.7), lineWidth: 1))
     }
 
-    private func routeField(symbol: String, tint: Color, placeholder: String, text: Binding<String>) -> some View {
+    private func routeField(
+        symbol: String,
+        tint: Color,
+        placeholder: String,
+        text: Binding<String>,
+        submit: @escaping () -> Void
+    ) -> some View {
         HStack(spacing: 13) {
             Image(systemName: symbol)
                 .font(.system(size: 12, weight: .bold))
@@ -189,6 +265,7 @@ struct ContentView: View {
                 .textInputAutocapitalization(.words)
                 .autocorrectionDisabled()
                 .accessibilityLabel(placeholder)
+                .onSubmit(submit)
         }
         .padding(.horizontal, 18)
         .frame(height: 48)
@@ -295,24 +372,122 @@ struct ContentView: View {
         .buttonStyle(.plain)
     }
 
-    private func requestRide() {
+    @MainActor
+    private func requestRide() async {
         let trimmedDestination = destination.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedPickup = pickup.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedDestination.isEmpty, !trimmedPickup.isEmpty else { return }
+        guard let pickupCoordinate, let destinationCoordinate,
+              !trimmedDestination.isEmpty, !trimmedPickup.isEmpty else {
+            errorMessage = "Choose a pickup and destination from the map search results."
+            return
+        }
+        guard let sessionToken else {
+            isSignInPresented = true
+            return
+        }
 
-        let booking = RideBooking(
-            pickup: trimmedPickup,
-            destination: trimmedDestination,
-            rideName: selectedRide.name,
-            fare: selectedRide.price
-        )
-        modelContext.insert(booking)
-        receipt = BookingReceipt(
-            pickup: booking.pickup,
-            destination: booking.destination,
-            rideName: booking.rideName,
-            fare: booking.fare
-        )
+        isRequestingRide = true
+        defer { isRequestingRide = false }
+        do {
+            let request = RideRequest(
+                pickup: RideLocation(label: trimmedPickup, coordinate: pickupCoordinate),
+                destination: RideLocation(label: trimmedDestination, coordinate: destinationCoordinate),
+                rideType: selectedRide.id
+            )
+            let response = try await RideAPI.requestRide(token: sessionToken, request: request)
+            pendingPayment = PendingPayment(
+                id: response.rideId,
+                clientSecret: response.paymentIntentClientSecret,
+                pickup: trimmedPickup,
+                destination: trimmedDestination,
+                rideName: selectedRide.name,
+                fare: selectedRide.price
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func handlePaymentResult(_ result: PaymentSheetResult, payment: PendingPayment) {
+        switch result {
+        case .completed:
+            let booking = RideBooking(
+                pickup: payment.pickup,
+                destination: payment.destination,
+                rideName: payment.rideName,
+                fare: payment.fare
+            )
+            modelContext.insert(booking)
+            receipt = BookingReceipt(
+                pickup: payment.pickup,
+                destination: payment.destination,
+                rideName: payment.rideName,
+                fare: payment.fare
+            )
+            selectedTab = .activity
+            pendingPayment = nil
+        case .canceled:
+            pendingPayment = nil
+            guard let sessionToken else { return }
+            Task {
+                do {
+                    try await RideAPI.cancelRide(token: sessionToken, rideID: payment.id)
+                } catch {
+                    errorMessage = error.localizedDescription
+                }
+            }
+        case .failed(let error):
+            pendingPayment = nil
+            errorMessage = error.localizedDescription
+            guard let sessionToken else { return }
+            Task {
+                try? await RideAPI.cancelRide(token: sessionToken, rideID: payment.id)
+            }
+        }
+    }
+
+    @MainActor
+    private func resolvePickup() async {
+        let query = pickup.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+        do {
+            let item = try await searchPlace(query)
+            pickup = item.name ?? query
+            pickupCoordinate = item.placemark.coordinate
+        } catch {
+            errorMessage = "Couldn’t find that pickup. Try a nearby address or place name."
+        }
+    }
+
+    @MainActor
+    private func resolveDestination() async {
+        let query = destination.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+        do {
+            let item = try await searchPlace(query)
+            destination = item.name ?? query
+            destinationCoordinate = item.placemark.coordinate
+        } catch {
+            errorMessage = "Couldn’t find that destination. Try a nearby address or place name."
+        }
+    }
+
+    private func searchPlace(_ query: String) async throws -> MKMapItem {
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = query
+        if let pickupCoordinate {
+            request.region = MKCoordinateRegion(
+                center: pickupCoordinate,
+                latitudinalMeters: 20_000,
+                longitudinalMeters: 20_000
+            )
+        }
+        let response = try await MKLocalSearch(request: request).start()
+        guard let firstMatch = response.mapItems.first else {
+            throw RideAPIError.response
+        }
+        return firstMatch
     }
 }
 
@@ -355,72 +530,92 @@ private struct RideOptionRow: View {
 }
 
 private struct RouteMapPreview: View {
+    let pickupCoordinate: CLLocationCoordinate2D?
+    let destinationCoordinate: CLLocationCoordinate2D?
+    let userCoordinate: CLLocationCoordinate2D?
+
+    @State private var cameraPosition = MapCameraPosition.region(
+        MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194),
+            span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
+        )
+    )
+    @State private var route: MKRoute?
+
     var body: some View {
-        GeometryReader { geometry in
-            let size = geometry.size
-            ZStack {
-                Color(red: 0.89, green: 0.92, blue: 0.86)
-
-                Path { path in
-                    path.move(to: CGPoint(x: -10, y: size.height * 0.22))
-                    path.addCurve(to: CGPoint(x: size.width + 10, y: size.height * 0.38), control1: CGPoint(x: size.width * 0.35, y: size.height * 0.12), control2: CGPoint(x: size.width * 0.55, y: size.height * 0.55))
-                    path.move(to: CGPoint(x: -10, y: size.height * 0.76))
-                    path.addCurve(to: CGPoint(x: size.width + 10, y: size.height * 0.67), control1: CGPoint(x: size.width * 0.35, y: size.height * 0.62), control2: CGPoint(x: size.width * 0.68, y: size.height * 0.87))
-                    path.move(to: CGPoint(x: size.width * 0.28, y: -10))
-                    path.addCurve(to: CGPoint(x: size.width * 0.49, y: size.height + 10), control1: CGPoint(x: size.width * 0.16, y: size.height * 0.35), control2: CGPoint(x: size.width * 0.58, y: size.height * 0.55))
-                    path.move(to: CGPoint(x: size.width * 0.78, y: -10))
-                    path.addCurve(to: CGPoint(x: size.width * 0.67, y: size.height + 10), control1: CGPoint(x: size.width * 0.91, y: size.height * 0.33), control2: CGPoint(x: size.width * 0.57, y: size.height * 0.7))
+        Map(position: $cameraPosition) {
+            UserAnnotation()
+            if let pickupCoordinate {
+                Annotation("Pickup", coordinate: pickupCoordinate) {
+                    mapPin(symbol: "circle.fill", color: TrypsStyle.accent)
                 }
-                .stroke(.white.opacity(0.9), style: StrokeStyle(lineWidth: 13, lineCap: .round))
-
-                Path { path in
-                    path.move(to: CGPoint(x: size.width * 0.28, y: size.height * 0.76))
-                    path.addCurve(to: CGPoint(x: size.width * 0.75, y: size.height * 0.27), control1: CGPoint(x: size.width * 0.43, y: size.height * 0.71), control2: CGPoint(x: size.width * 0.58, y: size.height * 0.28))
+            }
+            if let destinationCoordinate {
+                Annotation("Destination", coordinate: destinationCoordinate) {
+                    mapPin(symbol: "mappin.and.ellipse", color: Color(red: 0.83, green: 0.40, blue: 0.25))
                 }
-                .stroke(TrypsStyle.accent, style: StrokeStyle(lineWidth: 4, lineCap: .round, dash: [1, 0]))
-
-                mapPin(symbol: "location.fill", color: TrypsStyle.accent)
-                    .position(x: size.width * 0.28, y: size.height * 0.76)
-                mapPin(symbol: "mappin.and.ellipse", color: Color(red: 0.83, green: 0.40, blue: 0.25))
-                    .position(x: size.width * 0.75, y: size.height * 0.27)
-
-                VStack {
-                    HStack {
-                        Label("SAN FRANCISCO", systemImage: "location.north.fill")
-                            .font(.system(size: 9, weight: .bold))
-                            .tracking(0.8)
-                            .foregroundStyle(TrypsStyle.ink.opacity(0.72))
-                        Spacer()
-                        Image(systemName: "plus.magnifyingglass")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(TrypsStyle.ink)
-                            .frame(width: 32, height: 32)
-                            .background(.white.opacity(0.9), in: Circle())
-                    }
-                    Spacer()
-                    HStack {
-                        Spacer()
-                        Label("3.2 mi", systemImage: "arrow.triangle.turn.up.right.diamond.fill")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(TrypsStyle.ink)
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 8)
-                            .background(.white.opacity(0.94), in: Capsule())
-                    }
-                }
-                .padding(14)
+            }
+            if let route {
+                MapPolyline(route.polyline)
+                    .stroke(TrypsStyle.accent, lineWidth: 5)
+            }
+        }
+        .mapStyle(.standard(elevation: .realistic))
+        .mapControls {
+            MapCompass()
+            MapUserLocationButton()
+        }
+        .onChange(of: pickupCoordinate?.latitude) { _, _ in updateMap() }
+        .onChange(of: pickupCoordinate?.longitude) { _, _ in updateMap() }
+        .onChange(of: destinationCoordinate?.latitude) { _, _ in updateMap() }
+        .onChange(of: destinationCoordinate?.longitude) { _, _ in updateMap() }
+        .onChange(of: userCoordinate?.latitude) { _, _ in
+            if pickupCoordinate == nil, let userCoordinate {
+                cameraPosition = .region(MKCoordinateRegion(
+                    center: userCoordinate,
+                    span: MKCoordinateSpan(latitudeDelta: 0.035, longitudeDelta: 0.035)
+                ))
             }
         }
     }
 
     private func mapPin(symbol: String, color: Color) -> some View {
         Image(systemName: symbol)
-            .font(.system(size: 13, weight: .bold))
+            .font(.system(size: 12, weight: .bold))
             .foregroundStyle(.white)
             .frame(width: 30, height: 30)
             .background(color, in: Circle())
             .overlay(Circle().stroke(.white, lineWidth: 3))
             .shadow(color: .black.opacity(0.15), radius: 5, y: 2)
+    }
+
+    private func updateMap() {
+        guard let pickupCoordinate else {
+            route = nil
+            return
+        }
+        if let destinationCoordinate {
+            Task {
+                let request = MKDirections.Request()
+                request.source = MKMapItem(placemark: MKPlacemark(coordinate: pickupCoordinate))
+                request.destination = MKMapItem(placemark: MKPlacemark(coordinate: destinationCoordinate))
+                request.transportType = .automobile
+                do {
+                    let directions = try await MKDirections(request: request).calculate()
+                    guard let firstRoute = directions.routes.first else { return }
+                    route = firstRoute
+                    cameraPosition = .rect(firstRoute.polyline.boundingMapRect.insetBy(dx: -2_000, dy: -2_000))
+                } catch {
+                    route = nil
+                }
+            }
+        } else {
+            route = nil
+            cameraPosition = .region(MKCoordinateRegion(
+                center: pickupCoordinate,
+                span: MKCoordinateSpan(latitudeDelta: 0.035, longitudeDelta: 0.035)
+            ))
+        }
     }
 }
 

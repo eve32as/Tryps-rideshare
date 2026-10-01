@@ -9,6 +9,8 @@
 		A10000000000000000000001 /* TrypsRideshareApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* TrypsRideshareApp.swift */; };
 		A10000000000000000000002 /* RideBooking.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* RideBooking.swift */; };
 		A10000000000000000000003 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* ContentView.swift */; };
+		A10000000000000000000004 /* RideServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000006 /* RideServices.swift */; };
+		A10000000000000000000005 /* StripePaymentSheet in Frameworks */ = {isa = PBXBuildFile; productRef = E10000000000000000000003 /* StripePaymentSheet */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -17,10 +19,13 @@
 		B10000000000000000000003 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		B10000000000000000000004 /* TrypsRideshare.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TrypsRideshare.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000005 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		B10000000000000000000006 /* RideServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideServices.swift; sourceTree = "<group>"; };
+		B10000000000000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B10000000000000000000008 /* TrypsRideshare.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TrypsRideshare.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		C10000000000000000000001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		C10000000000000000000001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000005 /* StripePaymentSheet in Frameworks */,); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -39,6 +44,9 @@
 				B10000000000000000000001 /* TrypsRideshareApp.swift */,
 				D10000000000000000000004 /* Models */,
 				D10000000000000000000005 /* Views */,
+				D10000000000000000000006 /* Services */,
+				B10000000000000000000007 /* Info.plist */,
+				B10000000000000000000008 /* TrypsRideshare.entitlements */,
 			);
 			path = TrypsRideshare;
 			sourceTree = "<group>";
@@ -53,6 +61,12 @@
 			isa = PBXGroup;
 			children = (B10000000000000000000003 /* ContentView.swift */,);
 			path = Views;
+			sourceTree = "<group>";
+		};
+		D10000000000000000000006 /* Services */ = {
+			isa = PBXGroup;
+			children = (B10000000000000000000006 /* RideServices.swift */,);
+			path = Services;
 			sourceTree = "<group>";
 		};
 		D10000000000000000000003 /* Products */ = {
@@ -77,6 +91,7 @@
 			productName = TrypsRideshare;
 			productReference = B10000000000000000000004 /* TrypsRideshare.app */;
 			productType = "com.apple.product-type.application";
+			packageProductDependencies = (E10000000000000000000003 /* StripePaymentSheet */,);
 		};
 /* End PBXNativeTarget section */
 
@@ -96,6 +111,7 @@
 			productRefGroup = D10000000000000000000003 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
+			packageReferences = (Q10000000000000000000001 /* XCRemoteSwiftPackageReference "stripe-ios" */,);
 			targets = (E10000000000000000000001 /* TrypsRideshare */,);
 		};
 /* End PBXProject section */
@@ -108,6 +124,7 @@
 				A10000000000000000000001 /* TrypsRideshareApp.swift in Sources */,
 				A10000000000000000000002 /* RideBooking.swift in Sources */,
 				A10000000000000000000003 /* ContentView.swift in Sources */,
+				A10000000000000000000004 /* RideServices.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -120,16 +137,20 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_KEY_CFBundleDisplayName = Tryps;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.travel";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				INFOPLIST_FILE = TrypsRideshare/Info.plist;
+				CODE_SIGN_ENTITLEMENTS = TrypsRideshare/TrypsRideshare.entitlements;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.tryps.rideshare;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				TRYPS_API_BASE_URL = "https://api.example.com";
+				STRIPE_PUBLISHABLE_KEY = pk_test_replace_me;
 			};
 			name = Debug;
 		};
@@ -139,16 +160,20 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_KEY_CFBundleDisplayName = Tryps;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.travel";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				INFOPLIST_FILE = TrypsRideshare/Info.plist;
+				CODE_SIGN_ENTITLEMENTS = TrypsRideshare/TrypsRideshare.entitlements;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.tryps.rideshare;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				TRYPS_API_BASE_URL = "https://api.example.com";
+				STRIPE_PUBLISHABLE_KEY = pk_test_replace_me;
 			};
 			name = Release;
 		};
@@ -178,6 +203,22 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		Q10000000000000000000001 /* XCRemoteSwiftPackageReference "stripe-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/stripe/stripe-ios";
+			requirement = {kind = exactVersion; version = 26.12.1; };
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		E10000000000000000000003 /* StripePaymentSheet */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = Q10000000000000000000001 /* XCRemoteSwiftPackageReference "stripe-ios" */;
+			productName = StripePaymentSheet;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = E10000000000000000000002 /* Project object */;
 }
