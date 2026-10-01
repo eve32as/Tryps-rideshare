@@ -12,7 +12,9 @@ struct RideQuote: Identifiable {
     let currency: String
     let distanceKm: Double
 
-    var amount: Int { Int((Double(amountCents) / 100).rounded()) }
+    var formattedAmount: String {
+        (Double(amountCents) / 100).formatted(.currency(code: currency.uppercased()))
+    }
 }
 
 struct RidePaymentSession: Identifiable {
@@ -262,5 +264,66 @@ final class PaymentSheetPresentationController: UIViewController {
         onAppear?(self)
     }
 }
+#else
+enum RidePaymentResult {
+    case completed
+    case cancelled
+    case failed
+}
 #endif
+#elseif canImport(SwiftUI)
+import SwiftUI
+import MapKit
+
+enum RidePaymentResult {
+    case completed
+    case cancelled
+    case failed
+}
+
+struct RidePaymentSession: Identifiable {
+    let id: String
+    let clientSecret: String
+    let publishableKey: String
+}
+
+struct RideQuote: Identifiable {
+    let id: String
+    let rideType: String
+    let rideLabel: String
+    let amountCents: Int
+    let currency: String
+    let distanceKm: Double
+
+    var formattedAmount: String {
+        (Double(amountCents) / 100).formatted(.currency(code: currency.uppercased()))
+    }
+}
+
+@MainActor
+final class FirebaseRideStore: ObservableObject {
+    static let shared = FirebaseRideStore()
+    @Published private(set) var quotes: [String: RideQuote] = [:]
+    @Published private(set) var paymentSession: RidePaymentSession?
+    @Published private(set) var rideId: String?
+    @Published private(set) var rideStatus: String?
+    @Published private(set) var dispatchMessage: String?
+    @Published private(set) var isWorking = false
+    @Published var errorMessage: String?
+
+    private init() { }
+
+    func loadQuotes(pickup: CLLocationCoordinate2D, dropOff: CLLocationCoordinate2D, rideTypes: [String]) async {
+        errorMessage = "Add Firebase Firestore and Functions to the Swift package to enable ride quotes."
+    }
+
+    func requestRide(quote: RideQuote) async {
+        errorMessage = "Ride booking is available in the configured Xcode app."
+    }
+
+    func retryPayment() async { }
+    func paymentFinished(_ result: RidePaymentResult) { }
+    func cancelRide() async { }
+    func resetRide() { }
+}
 #endif

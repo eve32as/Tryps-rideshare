@@ -60,15 +60,13 @@ private enum EditingStop: String, Identifiable {
 private struct Ride: Identifiable, Hashable {
     let id: String
     let name: String
-    let detail: String
     let symbol: String
     let seats: Int
-    let fare: Int
 
     static let options = [
-        Ride(id: "everyday", name: "Everyday", detail: "4 min away", symbol: "car.side.fill", seats: 4, fare: 18),
-        Ride(id: "comfort", name: "Comfort", detail: "6 min away", symbol: "car.side.fill", seats: 4, fare: 26),
-        Ride(id: "xl", name: "XL", detail: "8 min away", symbol: "car.2.fill", seats: 6, fare: 32),
+        Ride(id: "everyday", name: "Everyday", symbol: "car.side.fill", seats: 4),
+        Ride(id: "comfort", name: "Comfort", symbol: "car.side.fill", seats: 4),
+        Ride(id: "xl", name: "XL", symbol: "car.2.fill", seats: 6),
     ]
 }
 
@@ -77,9 +75,9 @@ struct ContentView: View {
     @State private var selectedPickup: Destination?
     @State private var selectedRide = Ride.options[0]
     @State private var editingStop: EditingStop?
-    @State private var isRideRequested = false
     @State private var isShowingAccount = false
     @StateObject private var account = FirebaseAccountStore.shared
+    @StateObject private var rideStore = FirebaseRideStore.shared
     @State private var route: MKRoute?
     @State private var routeError: String?
     @State private var isCalculatingRoute = false
@@ -102,8 +100,9 @@ struct ContentView: View {
 
     private var routeRequestID: String {
         let destinationID = "\(destination.id)-\(rounded(destination.coordinate.latitude)),\(rounded(destination.coordinate.longitude))"
-        guard let pickupCoordinate else { return "no-pickup-\(destinationID)" }
-        return "\(rounded(pickupCoordinate.latitude)),\(rounded(pickupCoordinate.longitude))-\(destinationID)"
+        let signedInID = account.userID ?? "signed-out"
+        guard let pickupCoordinate else { return "no-pickup-\(destinationID)-\(signedInID)" }
+        return "\(rounded(pickupCoordinate.latitude)),\(rounded(pickupCoordinate.longitude))-\(destinationID)-\(signedInID)"
     }
 
     private func rounded(_ coordinate: CLLocationDegrees) -> CLLocationDegrees {
@@ -161,12 +160,18 @@ struct ContentView: View {
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $isShowingAccount) {
-            FirebaseAccountView(account: account)
+            FirebaseAccountView(account: account, locationManager: locationManager)
         }
-        .alert("Your ride is on its way", isPresented: $isRideRequested) {
-            Button("Done", role: .cancel) { }
-        } message: {
-            Text("\(selectedRide.name) to \(destination.name) · about \(BookingFare.formatted(fare(for: selectedRide)))")
+        .background {
+#if canImport(StripePaymentSheet) && canImport(UIKit)
+            if let paymentSession = rideStore.paymentSession {
+                StripePaymentSheetPresenter(session: paymentSession) { result in
+                    rideStore.paymentFinished(result)
+                }
+                .frame(width: 1, height: 1)
+                .accessibilityHidden(true)
+            }
+#endif
         }
     }
 
@@ -218,6 +223,14 @@ struct ContentView: View {
             }
             self.route = route
             cameraPosition = .rect(route.polyline.boundingMapRect)
+            if account.userID != nil {
+                await rideStore.loadQuotes(
+                    pickup: pickupCoordinate,
+                    dropOff: destination.coordinate,
+                    rideTypes: Ride.options.map(\.id)
+                )
+            }
+            guard !Task.isCancelled, activeRouteRequestToken == requestToken else { return }
         } catch {
             guard !Task.isCancelled, activeRouteRequestToken == requestToken else { return }
             route = nil
@@ -227,6 +240,11 @@ struct ContentView: View {
 
     private var routeSummary: String {
         if isCalculatingRoute { return "Finding your route…" }
+        if route != nil && account.userID == nil { return "Sign in to get ride quotes" }
+        if route != nil && rideStore.isWorking { return "Getting secure ride quotes…" }
+        if route != nil && rideStore.quotes.isEmpty {
+            return rideStore.errorMessage ?? "Ride prices unavailable"
+        }
         if let route {
             let minutes = max(1, Int((route.expectedTravelTime / 60).rounded()))
             let miles = route.distance / 1_609.344
@@ -243,9 +261,12 @@ struct ContentView: View {
         BookingReadiness.canRequestRide(
             hasPickup: pickupCoordinate.map { CLLocationCoordinate2DIsValid($0) } ?? false,
             hasDestination: CLLocationCoordinate2DIsValid(destination.coordinate),
-            hasRoute: route != nil,
-            isCalculatingRoute: isCalculatingRoute
+            hasRoute: route != nil && rideStore.quotes[selectedRide.id] != nil,
+            isCalculatingRoute: isCalculatingRoute || rideStore.isWorking
         )
+            && account.userID != nil
+            && (rideStore.rideId == nil ||
+                (rideStore.rideStatus == "awaiting_payment" && rideStore.paymentSession == nil))
     }
 
     private var header: some View {
@@ -322,9 +343,13 @@ struct ContentView: View {
 
                     VStack(spacing: 8) {
                         ForEach(Ride.options) { ride in
+                            let quote = rideStore.quotes[ride.id]
                             RideOptionRow(
                                 ride: ride,
-                                fare: fare(for: ride),
+                                fare: quote?.formattedAmount,
+                                detail: quote.map {
+                                    "\($0.distanceKm.formatted(.number.precision(.fractionLength(1)))) km · upfront price"
+                                } ?? "Waiting for quote",
                                 isSelected: ride == selectedRide
                             ) {
                                 selectedRide = ride
@@ -332,15 +357,25 @@ struct ContentView: View {
                         }
                     }
 
+                    if let rideID = rideStore.rideId {
+                        rideStatusCard(rideID: rideID)
+                    }
+                    if let error = rideStore.errorMessage {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
                     HStack(spacing: 12) {
                         Image(systemName: "creditcard.fill")
                             .font(.system(size: 16))
                             .foregroundStyle(TrypsStyle.green)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Personal · •••• 2048")
+                            Text("Secure payment")
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(TrypsStyle.ink)
-                            Text("Visa")
+                            Text("Powered by Stripe")
                                 .font(.system(size: 11))
                                 .foregroundStyle(TrypsStyle.muted)
                         }
@@ -353,7 +388,7 @@ struct ContentView: View {
                     .padding(.vertical, 11)
                     .background(Color(red: 0.97, green: 0.98, blue: 0.97), in: RoundedRectangle(cornerRadius: 14))
                     .accessibilityElement(children: .combine)
-                    .accessibilityLabel("Payment method, Personal Visa ending in 2048")
+                    .accessibilityLabel("Secure payment powered by Stripe")
                 }
                 .padding(.horizontal, 22)
                 .padding(.bottom, 14)
@@ -361,13 +396,14 @@ struct ContentView: View {
 
             Button {
                 guard canRequestRide else { return }
-                isRideRequested = true
+                guard let quote = rideStore.quotes[selectedRide.id] else { return }
+                Task { await rideStore.requestRide(quote: quote) }
             } label: {
                 HStack {
-                    Text("Confirm \(selectedRide.name)")
+                    Text(rideStore.rideId == nil ? "Request & pay · \(selectedRide.name)" : "Retry secure payment")
                         .font(.system(size: 16, weight: .bold))
                     Spacer()
-                    Text(BookingFare.formatted(fare(for: selectedRide)))
+                    Text(rideStore.quotes[selectedRide.id]?.formattedAmount ?? "—")
                         .font(.system(size: 16, weight: .bold))
                     Image(systemName: "arrow.right")
                         .font(.system(size: 13, weight: .bold))
@@ -378,8 +414,8 @@ struct ContentView: View {
                 .background(TrypsStyle.green, in: RoundedRectangle(cornerRadius: 17))
             }
             .accessibilityHint("Requests the selected ride to \(destination.name)")
-            .disabled(!canRequestRide)
-            .opacity(canRequestRide ? 1 : 0.55)
+            .disabled(!canRequestRide || rideStore.isWorking)
+            .opacity(canRequestRide && !rideStore.isWorking ? 1 : 0.55)
             .padding(.horizontal, 22)
             .padding(.top, 10)
             .padding(.bottom, 12)
@@ -472,19 +508,43 @@ struct ContentView: View {
         }
     }
 
-    private func fare(for ride: Ride) -> Int {
-        // Sample surcharges apply only to seeded places; live and searched stops await backend quotes.
-        BookingFare.total(
-            baseFare: ride.fare,
-            pickupSurcharge: selectedPickup?.fareSurcharge ?? 0,
-            dropOffSurcharge: destination.fareSurcharge
-        )
+    @ViewBuilder
+    private func rideStatusCard(rideID: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Booking \(rideID.prefix(8))")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(TrypsStyle.muted)
+            Text((rideStore.rideStatus ?? "awaiting_payment").replacingOccurrences(of: "_", with: " ").capitalized)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(TrypsStyle.ink)
+            if let dispatchMessage = rideStore.dispatchMessage {
+                Text(dispatchMessage)
+                    .font(.footnote)
+                    .foregroundStyle(TrypsStyle.muted)
+            }
+            if ["awaiting_payment", "searching_driver", "offered", "driver_assigned", "en_route"].contains(rideStore.rideStatus ?? "") {
+                Button("Cancel ride", role: .destructive) {
+                    Task { await rideStore.cancelRide() }
+                }
+                .disabled(rideStore.isWorking)
+            }
+            if ["completed", "cancelled"].contains(rideStore.rideStatus ?? "") {
+                Button("Book another ride") {
+                    rideStore.resetRide()
+                }
+                .tint(TrypsStyle.green)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(13)
+        .background(TrypsStyle.paleGreen, in: RoundedRectangle(cornerRadius: 14))
     }
 }
 
 private struct RideOptionRow: View {
     let ride: Ride
-    let fare: Int
+    let fare: String?
+    let detail: String
     let isSelected: Bool
     let action: () -> Void
 
@@ -508,16 +568,21 @@ private struct RideOptionRow: View {
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(TrypsStyle.muted)
                     }
-                    Text(ride.detail)
+                    Text(detail)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(TrypsStyle.muted)
                 }
 
                 Spacer()
 
-                Text(BookingFare.formatted(fare))
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(TrypsStyle.ink)
+                if let fare {
+                    Text(fare)
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(TrypsStyle.ink)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                }
 
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 18))
@@ -533,7 +598,7 @@ private struct RideOptionRow: View {
             .contentShape(RoundedRectangle(cornerRadius: 15))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(ride.name), \(ride.detail), \(ride.seats) seats, \(BookingFare.formatted(fare))")
+        .accessibilityLabel("\(ride.name), \(detail), \(ride.seats) seats, \(fare ?? "price loading")")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
@@ -713,7 +778,7 @@ private struct RideMapView: View {
 }
 
 @MainActor
-private final class PickupLocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
+final class PickupLocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published private(set) var location: CLLocation?
     @Published private(set) var pickupLabel = "Finding your location…"
     @Published private(set) var authorizationStatus: CLAuthorizationStatus = .notDetermined

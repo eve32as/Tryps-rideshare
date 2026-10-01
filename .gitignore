@@ -1,5 +1,8 @@
 .DS_Store
 /GoogleService-Info.plist
+/functions/node_modules/
+/functions/.env*
+!/functions/.env.example
 /.build
 /Packages
 xcuserdata/

@@ -69,6 +69,16 @@ final class FirebaseAccountStore: ObservableObject {
         #endif
     }
 
+    func refreshClaims() {
+        #if canImport(FirebaseAuth) && canImport(FirebaseCore)
+        guard let user = Auth.auth().currentUser else { return }
+        user.getIDTokenResult(forcingRefresh: true) { [weak self] result, _ in
+            let isDriver = result?.claims["driver"] as? Bool == true
+            Task { @MainActor in self?.isDriver = isDriver }
+        }
+        #endif
+    }
+
     private func authenticate(email: String, password: String, createAccount: Bool) {
         guard isConfigured else {
             errorMessage = "Add GoogleService-Info.plist from your Firebase project to enable accounts."
@@ -121,6 +131,14 @@ struct FirebaseAccountView: View {
                         .font(.body)
                         .foregroundStyle(TrypsStyle.ink)
                     FirebaseDriverView(account: account, locationManager: locationManager)
+                    if !account.isDriver {
+                        Button("Refresh account access") {
+                            account.refreshClaims()
+                        }
+                        .font(.footnote.weight(.semibold))
+                        .tint(TrypsStyle.green)
+                        .frame(maxWidth: .infinity)
+                    }
                     Button("Sign out", role: .destructive) {
                         account.signOut()
                     }

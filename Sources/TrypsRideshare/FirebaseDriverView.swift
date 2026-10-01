@@ -25,15 +25,18 @@ private final class FirebaseDriverStore: ObservableObject {
 
     private var offerListener: ListenerRegistration?
     private var applicationListener: ListenerRegistration?
+    private var driverListener: ListenerRegistration?
     private var rideListener: ListenerRegistration?
     private var listeningUserID: String?
+    private var listeningAsDriver = false
 
     private init() { }
 
     func start(userID: String, isDriver: Bool) {
-        guard listeningUserID != userID else { return }
+        guard listeningUserID != userID || listeningAsDriver != isDriver else { return }
         stop()
         listeningUserID = userID
+        listeningAsDriver = isDriver
 
         applicationListener = Firestore.firestore().collection("driverApplications")
             .document(userID)
@@ -43,6 +46,11 @@ private final class FirebaseDriverStore: ObservableObject {
             }
 
         guard isDriver else { return }
+        driverListener = Firestore.firestore().collection("drivers").document(userID)
+            .addSnapshotListener { [weak self] snapshot, _ in
+                let available = snapshot?.data()?["available"] as? Bool ?? false
+                Task { @MainActor in self?.isAvailable = available }
+            }
         offerListener = Firestore.firestore().collection("drivers")
             .document(userID)
             .collection("offers")
@@ -50,6 +58,8 @@ private final class FirebaseDriverStore: ObservableObject {
             .addSnapshotListener { [weak self] snapshot, error in
                 let offers = snapshot?.documents.compactMap { document -> DriverOffer? in
                     guard let data = document.data() as? [String: Any],
+                          let expiry = data["expiresAt"] as? Timestamp,
+                          expiry.dateValue() > Date(),
                           let pickupData = data["pickup"] as? [String: Any],
                           let dropOffData = data["dropOff"] as? [String: Any],
                           let rideType = data["rideType"] as? String,
@@ -69,11 +79,14 @@ private final class FirebaseDriverStore: ObservableObject {
     func stop() {
         offerListener?.remove()
         applicationListener?.remove()
+        driverListener?.remove()
         rideListener?.remove()
         offerListener = nil
         applicationListener = nil
+        driverListener = nil
         rideListener = nil
         listeningUserID = nil
+        listeningAsDriver = false
         offers = []
     }
 
@@ -118,6 +131,7 @@ private final class FirebaseDriverStore: ObservableObject {
         defer { isWorking = false }
         do {
             _ = try await call("claimRideOffer", data: ["rideId": offer.id])
+            isAvailable = false
             activeRideId = offer.id
             listenForActiveRide(offer.id)
         } catch {
@@ -155,7 +169,16 @@ private final class FirebaseDriverStore: ObservableObject {
         rideListener = Firestore.firestore().collection("rides").document(rideID)
             .addSnapshotListener { [weak self] snapshot, _ in
                 let status = snapshot?.data()?["status"] as? String
-                Task { @MainActor in self?.activeRideStatus = status }
+                Task { @MainActor in
+                    if status == "cancelled" || status == "completed" {
+                        self?.activeRideId = nil
+                        self?.activeRideStatus = nil
+                        self?.rideListener?.remove()
+                        self?.rideListener = nil
+                    } else {
+                        self?.activeRideStatus = status
+                    }
+                }
             }
     }
 
@@ -209,16 +232,6 @@ struct FirebaseDriverView: View {
         .onChange(of: account.isDriver) { _, isDriver in
             if let userID = account.userID {
                 driver.start(userID: userID, isDriver: isDriver)
-            }
-        }
-        .onChange(of: locationManager.location) { _, location in
-            if let location {
-                Task {
-                    await driver.setAvailability(
-                        true,
-                        location: location.coordinate
-                    )
-                }
             }
         }
     }
@@ -283,6 +296,7 @@ struct FirebaseDriverView: View {
                 Button {
                     if !driver.isAvailable && locationManager.location == nil {
                         locationManager.requestLocation()
+                        driver.errorMessage = "Fetching location. Tap Go online again when your pickup is visible."
                     } else {
                         Task {
                             await driver.setAvailability(
@@ -348,6 +362,20 @@ struct FirebaseDriverView: View {
         case "in_progress": "Complete trip"
         default: "Update trip"
         }
+    }
+}
+#elseif canImport(SwiftUI)
+import SwiftUI
+
+struct FirebaseDriverView: View {
+    @ObservedObject var account: FirebaseAccountStore
+    @ObservedObject var locationManager: PickupLocationManager
+
+    var body: some View {
+        Text("Driver tools are available in the Firebase-configured Xcode app.")
+            .font(.footnote)
+            .foregroundStyle(TrypsStyle.muted)
+            .padding(.vertical, 10)
     }
 }
 #endif

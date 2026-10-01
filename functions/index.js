@@ -44,6 +44,14 @@ function requireDriver(request) {
   return uid;
 }
 
+function requireAdmin(request) {
+  const uid = authenticatedUser(request);
+  if (request.auth.token.admin !== true) {
+    throw new HttpsError("permission-denied", "Administrator access is required.");
+  }
+  return uid;
+}
+
 function parseRideType(data) {
   if (!data || typeof data.rideType !== "string") {
     throw new HttpsError("invalid-argument", "Choose a ride type.");
@@ -180,7 +188,7 @@ exports.createRidePaymentIntent = onCall({
     throw new HttpsError("not-found", "Booking not found.");
   }
   const ride = snapshot.data();
-  if (ride.status !== "awaiting_payment" || ride.paymentStatus !== "unpaid") {
+  if (ride.status !== "awaiting_payment" || !["unpaid", "failed"].includes(ride.paymentStatus)) {
     throw new HttpsError("failed-precondition", "This booking is not awaiting payment.");
   }
   if (!Number.isSafeInteger(ride.amountCents) || ride.amountCents < 100) {
@@ -188,6 +196,7 @@ exports.createRidePaymentIntent = onCall({
   }
 
   const stripe = getStripe();
+  const paymentAttempt = (ride.paymentAttempts ?? 0) + 1;
   let intent;
   try {
     intent = await stripe.paymentIntents.create({
@@ -195,7 +204,7 @@ exports.createRidePaymentIntent = onCall({
       currency: ride.currency,
       automatic_payment_methods: { enabled: true },
       metadata: { rideId, riderUid: uid },
-    }, { idempotencyKey: `ride-payment-${rideId}` });
+    }, { idempotencyKey: `ride-payment-${rideId}-${paymentAttempt}` });
   } catch (error) {
     logger.error("Stripe PaymentIntent creation failed", { rideId, error: error.message });
     throw new HttpsError("internal", "Could not start payment. Please try again.");
@@ -207,6 +216,7 @@ exports.createRidePaymentIntent = onCall({
     }
     transaction.update(rideRef, {
       paymentIntentId: intent.id,
+      paymentAttempts: paymentAttempt,
       updatedAt: FieldValue.serverTimestamp(),
     });
   });
@@ -239,11 +249,28 @@ exports.cancelRideBooking = onCall({
     }
     paymentIntentId = ride.paymentIntentId;
     paymentStatus = ride.paymentStatus;
+    const offerRefs = (ride.offeredDriverUids ?? [])
+      .map((driverUid) => db.collection("drivers").doc(driverUid).collection("offers").doc(rideId));
+    const reads = await Promise.all([
+      ...offerRefs.map((ref) => transaction.get(ref)),
+      ...(ride.driverUid ? [transaction.get(db.collection("drivers").doc(ride.driverUid))] : []),
+    ]);
     transaction.update(rideRef, {
       status: "cancelled",
       paymentStatus: paymentStatus === "succeeded" ? "refund_pending" : paymentStatus,
       updatedAt: FieldValue.serverTimestamp(),
     });
+    reads.slice(0, offerRefs.length).forEach((offer) => {
+      if (offer.exists && offer.data().status === "pending") {
+        transaction.update(offer.ref, { status: "expired", updatedAt: FieldValue.serverTimestamp() });
+      }
+    });
+    if (ride.driverUid && reads[offerRefs.length]?.exists) {
+      transaction.update(reads[offerRefs.length].ref, {
+        available: true,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
   });
 
   if (paymentIntentId && paymentStatus === "succeeded") {
@@ -293,6 +320,43 @@ exports.applyToDrive = onCall({ region: REGION }, async (request) => {
     createdAt: FieldValue.serverTimestamp(),
   }, { merge: true });
   return { status: "pending_review" };
+});
+
+exports.approveDriverApplication = onCall({ region: REGION }, async (request) => {
+  requireAdmin(request);
+  const driverUid = request.data?.driverUid;
+  if (typeof driverUid !== "string" || driverUid.length > 128) {
+    throw new HttpsError("invalid-argument", "A valid driver account is required.");
+  }
+  const applicationRef = db.collection("driverApplications").doc(driverUid);
+  const applicationSnapshot = await applicationRef.get();
+  if (!applicationSnapshot.exists || applicationSnapshot.data().status !== "pending_review") {
+    throw new HttpsError("not-found", "Pending driver application not found.");
+  }
+  const application = applicationSnapshot.data();
+  const driverRef = db.collection("drivers").doc(driverUid);
+  const existingDriver = await driverRef.get();
+  await driverRef.set({
+    uid: driverUid,
+    displayName: application.displayName,
+    vehicleDescription: application.vehicleDescription,
+    licensePlate: application.licensePlate,
+    verified: true,
+    available: false,
+    ...(existingDriver.data()?.location ? { location: existingDriver.data().location } : {}),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  const user = await require("firebase-admin/auth").getAuth().getUser(driverUid);
+  await require("firebase-admin/auth").getAuth().setCustomUserClaims(driverUid, {
+    ...user.customClaims,
+    driver: true,
+  });
+  await applicationRef.update({
+    status: "approved",
+    reviewedAt: FieldValue.serverTimestamp(),
+    reviewedBy: request.auth.uid,
+  });
+  return { driverUid, status: "approved" };
 });
 
 exports.setDriverAvailability = onCall({ region: REGION }, async (request) => {
@@ -431,21 +495,23 @@ exports.stripeWebhook = onRequest({
         transaction.get(rideRef),
       ]);
       if (eventSnapshot.exists) return "duplicate";
-      if (!rideSnapshot.exists || rideSnapshot.data().paymentIntentId !== paymentIntent.id) {
+      if (!rideSnapshot.exists || !rideSnapshot.data().paymentIntentId) {
         return "not-ready";
       }
+      const currentRide = rideSnapshot.data();
       transaction.create(db.collection("stripeEvents").doc(event.id), {
         type: event.type,
         processedAt: FieldValue.serverTimestamp(),
       });
-      if (event.type === "payment_intent.succeeded" && rideSnapshot.data().status === "cancelled") {
+      if (currentRide.paymentIntentId !== paymentIntent.id) return "ignored";
+      if (event.type === "payment_intent.succeeded" && currentRide.status === "cancelled") {
         transaction.update(rideRef, {
           paymentStatus: "refund_pending",
           updatedAt: FieldValue.serverTimestamp(),
         });
         return "refund";
       }
-      if (event.type === "payment_intent.succeeded" && rideSnapshot.data().status === "awaiting_payment") {
+      if (event.type === "payment_intent.succeeded" && currentRide.status === "awaiting_payment") {
         transaction.update(rideRef, {
           paymentStatus: "succeeded",
           status: "dispatching",
@@ -453,7 +519,7 @@ exports.stripeWebhook = onRequest({
           updatedAt: FieldValue.serverTimestamp(),
         });
         return "paid";
-      } else if (event.type === "payment_intent.payment_failed") {
+      } else if (event.type === "payment_intent.payment_failed" && currentRide.status === "awaiting_payment") {
         transaction.update(rideRef, {
           paymentStatus: "failed",
           updatedAt: FieldValue.serverTimestamp(),

@@ -36,6 +36,7 @@ test("distance is symmetric and driver trip statuses only move forward", () => {
   const b = { latitude: 37.784, longitude: -122.409 };
   assert.ok(Math.abs(distanceInKilometers(a, b) - distanceInKilometers(b, a)) < 1e-9);
   assert.equal(canTransitionRide("en_route", "arrived"), true);
+  assert.equal(canTransitionRide("driver_assigned", "en_route"), true);
   assert.equal(canTransitionRide("completed", "in_progress"), false);
   assert.equal(canTransitionRide("arrived", "completed"), false);
 });
