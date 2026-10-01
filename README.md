@@ -59,6 +59,9 @@ cd functions && npm test && npm audit --omit=dev
 ```
 
 The release build is unsigned until a secure local or CI signing configuration is supplied.
+GitHub Actions runs these checks on every pull request and `main` push, then uploads
+the debug and unsigned release APKs as the `tryps-apks` workflow artifact. The
+workflow can also be started manually from the Actions tab.
 
 ## Data model
 
