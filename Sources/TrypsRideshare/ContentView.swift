@@ -190,7 +190,7 @@ struct ContentView: View {
         guard CLLocationCoordinate2DIsValid(pickupCoordinate),
               CLLocationCoordinate2DIsValid(destination.coordinate) else {
             route = nil
-            routeError = "Choose a pickup and destination"
+            routeError = "Invalid pickup or destination location"
             return
         }
 
@@ -464,6 +464,7 @@ struct ContentView: View {
     }
 
     private func fare(for ride: Ride) -> Int {
+        // Sample surcharges apply only to seeded places; live and searched stops await backend quotes.
         BookingFare.total(
             baseFare: ride.fare,
             pickupSurcharge: selectedPickup?.fareSurcharge ?? 0,
@@ -759,8 +760,8 @@ private final class PickupLocationManager: NSObject, ObservableObject, CLLocatio
     private func applyLocation(_ location: CLLocation) {
         self.location = location
         pickupLabel = "Your location"
+        geocoder.cancelGeocode()
         Task {
-            geocoder.cancelGeocode()
             guard let placemark = try? await geocoder.reverseGeocodeLocation(location),
                   let name = placemark.first?.name,
                   self.location?.coordinate.latitude == location.coordinate.latitude,
