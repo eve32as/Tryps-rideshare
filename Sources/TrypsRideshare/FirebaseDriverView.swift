@@ -682,16 +682,11 @@ struct FirebaseDriverView: View {
 private struct DriverDemandHeatmap: View {
     let zones: [DriverDemandZone]
     let center: CLLocationCoordinate2D
+    @State private var cameraPosition: MapCameraPosition = .automatic
+    @State private var lastCameraCenter: CLLocationCoordinate2D?
 
     var body: some View {
-        Map(
-            initialPosition: .region(
-                MKCoordinateRegion(
-                    center: center,
-                    span: MKCoordinateSpan(latitudeDelta: 0.12, longitudeDelta: 0.12)
-                )
-            )
-        ) {
+        Map(position: $cameraPosition) {
             ForEach(zones) { zone in
                 Annotation("", coordinate: zone.coordinate, anchor: .center) {
                     Circle()
@@ -706,6 +701,24 @@ private struct DriverDemandHeatmap: View {
             }
         }
         .mapControlVisibility(.hidden)
+        .onAppear { recenter(force: true) }
+        .onChange(of: center.latitude) { _, _ in recenter() }
+        .onChange(of: center.longitude) { _, _ in recenter() }
+    }
+
+    private func recenter(force: Bool = false) {
+        if let lastCameraCenter, !force {
+            let previous = CLLocation(latitude: lastCameraCenter.latitude, longitude: lastCameraCenter.longitude)
+            let current = CLLocation(latitude: center.latitude, longitude: center.longitude)
+            guard current.distance(from: previous) >= 2_000 else { return }
+        }
+        cameraPosition = .region(
+            MKCoordinateRegion(
+                center: center,
+                span: MKCoordinateSpan(latitudeDelta: 0.12, longitudeDelta: 0.12)
+            )
+        )
+        lastCameraCenter = center
     }
 }
 
