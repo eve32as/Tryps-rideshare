@@ -50,7 +50,7 @@ class MainViewModel(
 
     init {
         viewModelScope.launch {
-            accounts.currentUser.catch(::showError).collectLatest { user ->
+            accounts.currentUser.catch { showError(it) }.collectLatest { user ->
                 mutableState.update { MainUiState(user = user, currentLocation = it.currentLocation) }
                 observeUserData(user)
             }
@@ -93,7 +93,7 @@ class MainViewModel(
             delay(250)
             runCatching { rides.searchPlaces(query, state.value.currentLocation) }
                 .onSuccess { results -> mutableState.update { it.copy(suggestions = results) } }
-                .onFailure(::showError)
+                .onFailure { showError(it) }
         }
     }
 
@@ -159,17 +159,17 @@ class MainViewModel(
         if (user == null) return
         userDataJob = viewModelScope.launch {
             launch {
-                rides.observeActiveRide(user.id, user.role).catch(::showError).collect { active ->
+                rides.observeActiveRide(user.id, user.role).catch { showError(it) }.collect { active ->
                     mutableState.update { it.copy(activeRide = active) }
                 }
             }
             launch {
-                rides.observeHistory(user.id, user.role).catch(::showError).collect { history ->
+                rides.observeHistory(user.id, user.role).catch { showError(it) }.collect { history ->
                     mutableState.update { it.copy(history = history) }
                 }
             }
             if (user.role == UserRole.DRIVER) launch {
-                rides.observeOpenRides().catch(::showError).collect { open ->
+                rides.observeOpenRides().catch { showError(it) }.collect { open ->
                     mutableState.update { it.copy(openRides = open) }
                 }
             }
@@ -179,7 +179,7 @@ class MainViewModel(
     private fun action(showProgress: Boolean = true, block: suspend () -> Unit) {
         viewModelScope.launch {
             if (showProgress) mutableState.update { it.copy(isBusy = true, error = null) }
-            runCatching { block() }.onFailure(::showError)
+            runCatching { block() }.onFailure { showError(it) }
             if (showProgress) mutableState.update { it.copy(isBusy = false) }
         }
     }
