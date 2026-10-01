@@ -170,6 +170,7 @@ struct ContentView: View {
               CLLocationCoordinate2DIsValid(destination.coordinate) else {
             route = nil
             routeError = "Choose a pickup and destination"
+            isCalculatingRoute = false
             return
         }
 
@@ -238,14 +239,12 @@ struct ContentView: View {
 
             Spacer()
 
-            Button { } label: {
-                Image(systemName: "person.crop.circle.fill")
-                    .font(.system(size: 24))
-                    .foregroundStyle(TrypsStyle.ink)
-                    .padding(5)
-                    .background(.white.opacity(0.92), in: Circle())
-            }
-            .accessibilityLabel("Your profile")
+            Image(systemName: "person.crop.circle.fill")
+                .font(.system(size: 24))
+                .foregroundStyle(TrypsStyle.ink)
+                .padding(5)
+                .background(.white.opacity(0.92), in: Circle())
+                .accessibilityHidden(true)
         }
     }
 
@@ -270,14 +269,12 @@ struct ContentView: View {
                                 .foregroundStyle(TrypsStyle.muted)
                         }
                         Spacer()
-                        Button { } label: {
-                            Label("Now", systemImage: "clock")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(TrypsStyle.ink)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 9)
-                                .background(Color(red: 0.96, green: 0.97, blue: 0.96), in: Capsule())
-                        }
+                        Label("Now", systemImage: "clock")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(TrypsStyle.ink)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 9)
+                            .background(Color(red: 0.96, green: 0.97, blue: 0.96), in: Capsule())
                     }
 
                     locationCard
@@ -447,7 +444,7 @@ struct ContentView: View {
     }
 
     private func fare(for ride: Ride) -> Int {
-        ride.fare + destination.fareSurcharge
+        ride.fare + destination.fareSurcharge + (selectedPickup?.fareSurcharge ?? 0)
     }
 }
 
