@@ -305,7 +305,8 @@ struct ContentView: View {
                 RouteMapPreview(
                     pickupCoordinate: pickupCoordinate,
                     destinationCoordinate: destinationCoordinate,
-                    userCoordinate: locationManager.coordinate
+                    userCoordinate: locationManager.coordinate,
+                    sessionToken: accountRole == .rider ? sessionToken : nil
                 )
                     .frame(height: 190)
                     .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
@@ -685,6 +686,11 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 10) {
                             Label(ride.pickup, systemImage: "circle.fill")
                             Label(ride.destination, systemImage: "mappin.and.ellipse")
+                            if ride.status == "confirmed", let geofenceMessage = locationManager.geofenceMessage {
+                                Label(geofenceMessage, systemImage: "location.circle")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(TrypsStyle.accent)
+                            }
                             if ride.status == "confirmed" {
                                 Button("Complete ride") {
                                     Task { await completeDriverRide(ride) }
@@ -739,6 +745,7 @@ struct ContentView: View {
             driverOnboardingComplete = profile.onboardingComplete
             driverAvailable = profile.available
             driverRides = try await RideAPI.assignedRides(token: sessionToken)
+            locationManager.syncRideGeofences(for: driverRides)
             if shouldTrackDriverLocation {
                 locationManager.startTracking()
             } else {
@@ -766,6 +773,7 @@ struct ContentView: View {
                 }
             }
             driverRides = try await RideAPI.assignedRides(token: sessionToken)
+            locationManager.syncRideGeofences(for: driverRides)
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -1165,10 +1173,22 @@ private struct RideOptionRow: View {
     }
 }
 
+private struct CachedRouteCoordinate: Codable {
+    let latitude: Double
+    let longitude: Double
+}
+
+private struct CachedRoute: Codable {
+    let key: String
+    let savedAt: Date
+    let coordinates: [CachedRouteCoordinate]
+}
+
 private struct RouteMapPreview: View {
     let pickupCoordinate: CLLocationCoordinate2D?
     let destinationCoordinate: CLLocationCoordinate2D?
     let userCoordinate: CLLocationCoordinate2D?
+    let sessionToken: String?
 
     @State private var cameraPosition = MapCameraPosition.region(
         MKCoordinateRegion(
@@ -1176,11 +1196,27 @@ private struct RouteMapPreview: View {
             span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
         )
     )
-    @State private var route: MKRoute?
+    @State private var routePolyline: MKPolyline?
+    @State private var routeStatus: String?
+    @State private var directions: MKDirections?
+    @State private var routeRequestID = UUID()
+    @State private var heatCells: [DriverHeatCell] = []
+
+    private var heatmapRequestKey: String {
+        guard let sessionToken, let center = pickupCoordinate ?? userCoordinate else { return "none" }
+        return "\(sessionToken):\(center.latitude.formatted(.number.precision(.fractionLength(4)))):\(center.longitude.formatted(.number.precision(.fractionLength(4))))"
+    }
 
     var body: some View {
         Map(position: $cameraPosition) {
             UserAnnotation()
+            ForEach(heatCells) { cell in
+                MapCircle(
+                    center: CLLocationCoordinate2D(latitude: cell.latitude, longitude: cell.longitude),
+                    radius: 1_100
+                )
+                .foregroundStyle(Color.orange.opacity(min(0.2, 0.06 + Double(cell.count) * 0.014)))
+            }
             if let pickupCoordinate {
                 Annotation("Pickup", coordinate: pickupCoordinate) {
                     mapPin(symbol: "circle.fill", color: TrypsStyle.accent)
@@ -1191,8 +1227,8 @@ private struct RouteMapPreview: View {
                     mapPin(symbol: "mappin.and.ellipse", color: Color(red: 0.83, green: 0.40, blue: 0.25))
                 }
             }
-            if let route {
-                MapPolyline(route.polyline)
+            if let routePolyline {
+                MapPolyline(routePolyline)
                     .stroke(TrypsStyle.accent, lineWidth: 5)
             }
         }
@@ -1205,6 +1241,34 @@ private struct RouteMapPreview: View {
         .onChange(of: pickupCoordinate?.longitude) { _, _ in updateMap() }
         .onChange(of: destinationCoordinate?.latitude) { _, _ in updateMap() }
         .onChange(of: destinationCoordinate?.longitude) { _, _ in updateMap() }
+        .task(id: heatmapRequestKey) {
+            await refreshHeatmap()
+        }
+        .overlay(alignment: .bottomLeading) {
+            if let routeStatus {
+                Label(routeStatus, systemImage: "arrow.trianglehead.turn.up.right.diamond")
+                    .font(.system(size: 10, weight: .semibold))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(9)
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            if !heatCells.isEmpty {
+                Label("Nearby driver activity", systemImage: "flame.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(9)
+            }
+        }
+        .onDisappear {
+            directions?.cancel()
+            directions = nil
+            routeRequestID = UUID()
+        }
         .onChange(of: userCoordinate?.latitude) { _, _ in
             if pickupCoordinate == nil, let userCoordinate {
                 cameraPosition = .region(MKCoordinateRegion(
@@ -1225,33 +1289,114 @@ private struct RouteMapPreview: View {
             .shadow(color: .black.opacity(0.15), radius: 5, y: 2)
     }
 
+    @MainActor
+    private func refreshHeatmap() async {
+        guard !Task.isCancelled, let sessionToken,
+              let center = pickupCoordinate ?? userCoordinate else {
+            heatCells = []
+            return
+        }
+        do {
+            let cells = try await RideAPI.driverHeatmap(token: sessionToken, center: center)
+            guard !Task.isCancelled else { return }
+            heatCells = cells
+        } catch {
+            if !Task.isCancelled { heatCells = [] }
+        }
+    }
+
+    @MainActor
     private func updateMap() {
+        directions?.cancel()
+        directions = nil
+        let requestID = UUID()
+        routeRequestID = requestID
         guard let pickupCoordinate else {
-            route = nil
+            routePolyline = nil
+            routeStatus = nil
             return
         }
         if let destinationCoordinate {
-            Task {
+            let key = Self.routeCacheKey(from: pickupCoordinate, to: destinationCoordinate)
+            if let cachedPolyline = Self.loadCachedRoute(for: key) {
+                routePolyline = cachedPolyline
+                routeStatus = "Saved route · refreshing"
+                cameraPosition = .rect(cachedPolyline.boundingMapRect.insetBy(dx: -2_000, dy: -2_000))
+            } else {
+                routePolyline = nil
+                routeStatus = nil
+            }
+            Task { @MainActor in
                 let request = MKDirections.Request()
                 request.source = MKMapItem(placemark: MKPlacemark(coordinate: pickupCoordinate))
                 request.destination = MKMapItem(placemark: MKPlacemark(coordinate: destinationCoordinate))
                 request.transportType = .automobile
+                let activeDirections = MKDirections(request: request)
+                directions = activeDirections
                 do {
-                    let directions = try await MKDirections(request: request).calculate()
-                    guard let firstRoute = directions.routes.first else { return }
-                    route = firstRoute
+                    let response = try await activeDirections.calculate()
+                    guard !Task.isCancelled, routeRequestID == requestID,
+                          let firstRoute = response.routes.first else { return }
+                    routePolyline = firstRoute.polyline
+                    routeStatus = nil
+                    Self.saveRoute(firstRoute.polyline, for: key)
                     cameraPosition = .rect(firstRoute.polyline.boundingMapRect.insetBy(dx: -2_000, dy: -2_000))
                 } catch {
-                    route = nil
+                    guard !Task.isCancelled, routeRequestID == requestID else { return }
+                    if routePolyline != nil {
+                        routeStatus = "Saved route · offline"
+                    } else {
+                        routeStatus = "Route unavailable"
+                    }
                 }
             }
         } else {
-            route = nil
+            routePolyline = nil
+            routeStatus = nil
             cameraPosition = .region(MKCoordinateRegion(
                 center: pickupCoordinate,
                 span: MKCoordinateSpan(latitudeDelta: 0.035, longitudeDelta: 0.035)
             ))
         }
+    }
+
+    private static func routeCacheKey(from origin: CLLocationCoordinate2D, to destination: CLLocationCoordinate2D) -> String {
+        let format = { (value: CLLocationDegrees) in
+            String(format: "%.5f", locale: Locale(identifier: "en_US_POSIX"), value)
+        }
+        return "\(format(origin.latitude)),\(format(origin.longitude)):" +
+            "\(format(destination.latitude)),\(format(destination.longitude))"
+    }
+
+    private static func loadCachedRoute(for key: String) -> MKPolyline? {
+        let storageKey = "tryps.cachedRoute"
+        guard let data = UserDefaults.standard.data(forKey: storageKey),
+              let cachedRoute = try? JSONDecoder().decode(CachedRoute.self, from: data),
+              cachedRoute.key == key,
+              Date.now.timeIntervalSince(cachedRoute.savedAt) < 24 * 60 * 60,
+              !cachedRoute.coordinates.isEmpty,
+              cachedRoute.coordinates.count <= 5_000 else {
+            UserDefaults.standard.removeObject(forKey: storageKey)
+            return nil
+        }
+        var coordinates = cachedRoute.coordinates.map {
+            CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)
+        }
+        return coordinates.withUnsafeMutableBufferPointer { buffer in
+            guard let baseAddress = buffer.baseAddress else { return nil }
+            return MKPolyline(coordinates: baseAddress, count: buffer.count)
+        }
+    }
+
+    private static func saveRoute(_ polyline: MKPolyline, for key: String) {
+        guard polyline.pointCount > 0, polyline.pointCount <= 5_000 else { return }
+        let points = (0..<polyline.pointCount).map { index -> CachedRouteCoordinate in
+            let coordinate = polyline.points()[index].coordinate
+            return CachedRouteCoordinate(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        }
+        let cache = CachedRoute(key: key, savedAt: .now, coordinates: points)
+        guard let data = try? JSONEncoder().encode(cache) else { return }
+        UserDefaults.standard.set(data, forKey: "tryps.cachedRoute")
     }
 }
 

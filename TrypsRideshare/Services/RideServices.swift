@@ -74,9 +74,21 @@ struct DriverRide: Decodable, Identifiable {
     let id: String
     let pickup: String
     let destination: String
+    let pickupLatitude: Double?
+    let pickupLongitude: Double?
+    let destinationLatitude: Double?
+    let destinationLongitude: Double?
     let rideType: String
     let status: String
     let hasRated: Bool?
+}
+
+struct DriverHeatCell: Decodable, Identifiable {
+    let latitude: Double
+    let longitude: Double
+    let count: Int
+
+    var id: String { "\(latitude)-\(longitude)" }
 }
 
 struct SignedInSession {
@@ -363,6 +375,14 @@ enum RideAPI {
         return response.rides
     }
 
+    static func driverHeatmap(token: String, center: CLLocationCoordinate2D) async throws -> [DriverHeatCell] {
+        let latitude = String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), center.latitude)
+        let longitude = String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), center.longitude)
+        let path = "/v1/driver-heatmap?latitude=\(latitude)&longitude=\(longitude)"
+        let response: DriverHeatmapResponse = try await send(path, method: "GET", token: token)
+        return response.cells
+    }
+
     static func completeRide(token: String, rideID: String) async throws {
         let _: RideCompletedResponse = try await send(
             "/v1/driver/rides/\(rideID)/complete",
@@ -487,6 +507,10 @@ private struct DriverAvailabilityResponse: Decodable {
 
 private struct DriverRidesResponse: Decodable {
     let rides: [DriverRide]
+}
+
+private struct DriverHeatmapResponse: Decodable {
+    let cells: [DriverHeatCell]
 }
 
 private struct RideCompletedResponse: Decodable {
@@ -696,10 +720,12 @@ final class PickupLocationManager: NSObject, ObservableObject, CLLocationManager
     @Published private(set) var coordinate: CLLocationCoordinate2D?
     @Published private(set) var address: String?
     @Published private(set) var errorMessage: String?
+    @Published private(set) var geofenceMessage: String?
 
     private let manager = CLLocationManager()
     private let geocoder = CLGeocoder()
     private var tracksContinuously = false
+    private var assignedRidesForGeofencing: [DriverRide] = []
 
     override init() {
         super.init()
@@ -748,6 +774,63 @@ final class PickupLocationManager: NSObject, ObservableObject, CLLocationManager
         manager.showsBackgroundLocationIndicator = false
     }
 
+    func syncRideGeofences(for rides: [DriverRide]) {
+        assignedRidesForGeofencing = rides
+        let activeRides = rides.filter { $0.status == "confirmed" }
+        let desiredRegions = activeRides.flatMap { ride -> [CLCircularRegion] in
+            [
+                makeRegion(
+                    rideID: ride.id,
+                    kind: "pickup",
+                    latitude: ride.pickupLatitude,
+                    longitude: ride.pickupLongitude
+                ),
+                makeRegion(
+                    rideID: ride.id,
+                    kind: "destination",
+                    latitude: ride.destinationLatitude,
+                    longitude: ride.destinationLongitude
+                ),
+            ].compactMap { $0 }
+        }
+        let desiredIdentifiers = Set(desiredRegions.map(\.identifier))
+        for region in manager.monitoredRegions where
+            region.identifier.hasPrefix("tryps-ride-") && !desiredIdentifiers.contains(region.identifier) {
+            manager.stopMonitoring(for: region)
+        }
+        guard manager.authorizationStatus == .authorizedAlways,
+              CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) else {
+            if !activeRides.isEmpty {
+                geofenceMessage = "Allow Always location access to get pickup and destination proximity alerts."
+            }
+            return
+        }
+        let activeIdentifiers = Set(manager.monitoredRegions.map(\.identifier))
+        for region in desiredRegions where !activeIdentifiers.contains(region.identifier) {
+            manager.startMonitoring(for: region)
+        }
+    }
+
+    private func makeRegion(
+        rideID: String,
+        kind: String,
+        latitude: Double?,
+        longitude: Double?
+    ) -> CLCircularRegion? {
+        guard let latitude, let longitude,
+              (-90...90).contains(latitude), (-180...180).contains(longitude) else {
+            return nil
+        }
+        let region = CLCircularRegion(
+            center: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
+            radius: 150,
+            identifier: "tryps-ride-\(rideID)-\(kind)"
+        )
+        region.notifyOnEntry = true
+        region.notifyOnExit = false
+        return region
+    }
+
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         if manager.authorizationStatus == .authorizedAlways {
             if tracksContinuously {
@@ -758,6 +841,7 @@ final class PickupLocationManager: NSObject, ObservableObject, CLLocationManager
             } else {
                 manager.requestLocation()
             }
+            syncRideGeofences(for: assignedRidesForGeofencing)
         } else if manager.authorizationStatus == .authorizedWhenInUse {
             if tracksContinuously {
                 manager.requestAlwaysAuthorization()
@@ -785,5 +869,22 @@ final class PickupLocationManager: NSObject, ObservableObject, CLLocationManager
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         errorMessage = "Couldn’t determine your location. Try again or enter a pickup."
+    }
+
+    func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
+        guard region.identifier.hasPrefix("tryps-ride-") else { return }
+        let place = region.identifier.hasSuffix("-pickup") ? "pickup" : "destination"
+        let message = "You’re near the ride \(place) location."
+        geofenceMessage = message
+        let content = UNMutableNotificationContent()
+        content.title = "Tryps ride update"
+        content.body = message
+        content.sound = .default
+        let request = UNNotificationRequest(
+            identifier: region.identifier,
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
     }
 }

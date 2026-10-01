@@ -4,6 +4,9 @@ Tryps is a SwiftUI iOS rideshare prototype with MapKit place search and directio
 current-location pickup, Sign in with Apple, driver matching, scheduled rides,
 driver location sharing, saved places, ratings, and Stripe Connect/PaymentSheet.
 Fare estimates use server-side driving routes and signed, time-limited quotes.
+The booking map can show coarse nearby driver activity; drivers can receive
+pickup and destination proximity alerts; the last calculated route is cached for
+short interruptions.
 
 ## iOS app
 
@@ -73,6 +76,14 @@ Set `APNS_HOST` to `api.sandbox.push.apple.com` for development builds and
 `api.push.apple.com` for Release. Notifications are best-effort; APNs delivery
 is not guaranteed.
 
+The rider map's driver-activity heatmap is authenticated, rounded to roughly
+2-km geographic cells, includes only cells with at least three currently active
+drivers, and caps displayed counts. It reports available-driver density, not
+rider demand, arrival guarantees, or a safety score. Drivers with assigned rides
+can receive local entry alerts within 150 meters of pickup and destination when
+Always location permission is enabled. These alerts are informational and never
+change ride status automatically.
+
 ## Prototype limitations
 
 The server selects the nearest online, onboarded driver within 10 km and
@@ -97,6 +108,11 @@ HTTPS URL ending in `/v1/shared-trips`; share tokens grant access to trip
 status and the driver's latest location and expire 24 hours after the trip's
 scheduled, completed, or created time. Ratings are one per participant and only
 available after completion; saved places are private to the signed-in rider.
+
+The booking map retains only its most recent route geometry on device for up to
+24 hours and can redraw it during a network interruption. This is not an offline
+map download or turn-by-turn navigation; Apple map tiles and directions may still
+be unavailable without connectivity, and location can be stale in a tunnel.
 
 The signed fare quote is charged when the rider confirms payment; the sample rate
 card is not a finalized production pricing policy. Configure Stripe in test mode

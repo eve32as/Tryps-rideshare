@@ -93,6 +93,8 @@ export function readConfig(env = process.env) {
     paymentReservationMinutes: 20,
     driverHeartbeatTimeoutSeconds: 120,
     scheduledDispatchLeadMinutes: 15,
+    heatmapRadiusMeters: 15000,
+    heatmapMinimumDrivers: 3,
     currency,
   };
 }

@@ -425,6 +425,45 @@ app.get("/v1/driver/profile", authenticate, requireRole("driver"), asyncRoute(as
   });
 }));
 
+app.get("/v1/driver-heatmap", authenticate, requireRole("rider"), asyncRoute(async (req, res) => {
+  const latitude = Number(req.query.latitude);
+  const longitude = Number(req.query.longitude);
+  if (
+    !Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
+    !Number.isFinite(longitude) || longitude < -180 || longitude > 180
+  ) {
+    return res.status(400).json({ error: "A valid map center is required." });
+  }
+  const result = await pool.query(
+    `SELECT ST_Y(cell) + 0.01 AS latitude, ST_X(cell) + 0.01 AS longitude, LEAST(count, 10)::integer AS count
+     FROM (
+       SELECT ST_SnapToGrid(location::geometry, 0.02, 0.02) AS cell, count(*) AS count
+       FROM drivers
+       WHERE available = true
+         AND location IS NOT NULL
+         AND location_updated_at > now() - ($3::double precision * interval '1 second')
+         AND updated_at > now() - ($3::double precision * interval '1 second')
+         AND ST_DWithin(
+           location,
+           ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
+           $4
+         )
+       GROUP BY cell
+       HAVING count(*) >= $5
+     ) AS nearby_cells
+     ORDER BY count DESC
+     LIMIT 50`,
+    [
+      longitude,
+      latitude,
+      config.driverHeartbeatTimeoutSeconds,
+      config.heatmapRadiusMeters,
+      config.heatmapMinimumDrivers,
+    ],
+  );
+  return res.json({ cells: result.rows });
+}));
+
 app.post("/v1/driver/heartbeat", authenticate, requireRole("driver"), asyncRoute(async (req, res) => {
   const result = await pool.query(
     `UPDATE drivers SET updated_at = now()
@@ -513,6 +552,10 @@ app.patch("/v1/driver/availability", authenticate, requireRole("driver"), asyncR
 app.get("/v1/driver/rides", authenticate, requireRole("driver"), asyncRoute(async (req, res) => {
   const result = await pool.query(
     `SELECT id, pickup_label AS pickup, destination_label AS destination, ride_type AS "rideType",
+            ST_Y(pickup::geometry) AS "pickupLatitude",
+            ST_X(pickup::geometry) AS "pickupLongitude",
+            ST_Y(destination::geometry) AS "destinationLatitude",
+            ST_X(destination::geometry) AS "destinationLongitude",
             status, created_at AS "createdAt",
             EXISTS (SELECT 1 FROM ride_ratings rr WHERE rr.ride_id = rides.id AND rr.rater_user_id = $1) AS "hasRated"
      FROM rides
