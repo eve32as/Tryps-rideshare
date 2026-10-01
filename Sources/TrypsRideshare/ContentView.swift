@@ -584,12 +584,21 @@ private struct DestinationPicker: View {
             }
             .searchable(text: $searchText, prompt: "Search places")
             .navigationTitle(title)
+#if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+#endif
             .toolbar {
+#if os(iOS)
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                         .tint(TrypsStyle.green)
                 }
+#else
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                        .tint(TrypsStyle.green)
+                }
+#endif
             }
             .task(id: searchText) {
                 await searchPlaces()
@@ -742,10 +751,8 @@ private final class PickupLocationManager: NSObject, ObservableObject, CLLocatio
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
-        let latitude = location.coordinate.latitude
-        let longitude = location.coordinate.longitude
         Task { @MainActor [weak self] in
-            self?.applyLocation(CLLocation(latitude: latitude, longitude: longitude))
+            self?.applyLocation(location)
         }
     }
 
