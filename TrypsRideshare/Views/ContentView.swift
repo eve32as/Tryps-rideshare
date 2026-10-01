@@ -1146,6 +1146,11 @@ private struct TripActivityRow: View {
     let localShareURL: String?
     let onRate: () -> Void
     let onCancel: () -> Void
+    @State private var isSafetyCenterPresented = false
+
+    private var tripShareURL: URL? {
+        localShareURL.flatMap(URL.init(string:))
+    }
 
     private var driverCoordinate: CLLocationCoordinate2D? {
         guard let latitude = trip.driverLatitude, let longitude = trip.driverLongitude else { return nil }
@@ -1187,13 +1192,13 @@ private struct TripActivityRow: View {
                     .foregroundStyle(TrypsStyle.muted)
             }
             HStack {
-                if let localShareURL = localShareURL.flatMap(URL.init(string:)) {
-                    ShareLink(item: localShareURL) {
-                        Label("Share trip", systemImage: "square.and.arrow.up")
-                            .font(.system(size: 12, weight: .semibold))
-                    }
-                    .tint(TrypsStyle.accent)
+                Button {
+                    isSafetyCenterPresented = true
+                } label: {
+                    Label("Safety", systemImage: "shield.lefthalf.filled")
+                        .font(.system(size: 12, weight: .semibold))
                 }
+                .foregroundStyle(TrypsStyle.accent)
                 Spacer()
                 if trip.status == "completed", !trip.hasRated {
                     Button("Rate driver", action: onRate)
@@ -1211,6 +1216,76 @@ private struct TripActivityRow: View {
         .foregroundStyle(TrypsStyle.muted)
         .padding(15)
         .background(.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .sheet(isPresented: $isSafetyCenterPresented) {
+            SafetyCenterSheet(tripURL: tripShareURL)
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
+        }
+    }
+}
+
+private struct SafetyCenterSheet: View {
+    let tripURL: URL?
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 12) {
+                Image(systemName: "shield.lefthalf.filled")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(TrypsStyle.accent)
+                    .frame(width: 46, height: 46)
+                    .background(TrypsStyle.accent.opacity(0.1), in: Circle())
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Safety center")
+                        .font(.system(size: 21, weight: .bold, design: .rounded))
+                        .foregroundStyle(TrypsStyle.ink)
+                    Text("Keep someone you trust in the loop.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(TrypsStyle.muted)
+                }
+            }
+
+            if let tripURL {
+                ShareLink(
+                    item: tripURL,
+                    subject: Text("My Tryps ride"),
+                    message: Text("Follow my trip status and driver's latest reported location.")
+                ) {
+                    Label("Share trip with a trusted contact", systemImage: "person.badge.shield.checkmark")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 52)
+                        .background(TrypsStyle.accent, in: RoundedRectangle(cornerRadius: 15))
+                }
+            } else {
+                Label("A trip-sharing link isn't available for this ride.", systemImage: "info.circle")
+                    .font(.system(size: 13))
+                    .foregroundStyle(TrypsStyle.muted)
+            }
+
+            if let emergencyURL = URL(string: "tel:911") {
+                Link(destination: emergencyURL) {
+                    Label("Call 911 (United States)", systemImage: "phone.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.red)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 15))
+                }
+            }
+            Text("This starts a phone call only. Tryps does not contact or dispatch emergency services.")
+                .font(.system(size: 11))
+                .foregroundStyle(TrypsStyle.muted)
+            Button("Done") { dismiss() }
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(TrypsStyle.ink)
+                .frame(maxWidth: .infinity)
+        }
+        .padding(24)
+        .padding(.top, 12)
     }
 }
 
