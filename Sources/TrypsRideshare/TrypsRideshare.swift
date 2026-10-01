@@ -13,6 +13,8 @@ struct TrypsRideshareApp: App {
 #if canImport(UIKit)
     @UIApplicationDelegateAdaptor(TrypsApplicationDelegate.self) private var applicationDelegate
 #endif
+    @StateObject private var account = FirebaseAccountStore.shared
+    @StateObject private var locationManager = PickupLocationManager()
 
     init() {
         #if canImport(FirebaseCore)
@@ -25,7 +27,18 @@ struct TrypsRideshareApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            TabView {
+                ContentView()
+                    .tabItem {
+                        Label("Ride", systemImage: "car.side.fill")
+                    }
+
+                DriverExperienceView(account: account, locationManager: locationManager)
+                    .tabItem {
+                        Label("Drive", systemImage: "steeringwheel")
+                    }
+            }
+            .tint(TrypsStyle.green)
         }
     }
 }

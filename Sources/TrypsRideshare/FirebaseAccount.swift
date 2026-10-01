@@ -130,7 +130,6 @@ struct FirebaseAccountView: View {
                     Text(signedInEmail)
                         .font(.body)
                         .foregroundStyle(TrypsStyle.ink)
-                    FirebaseDriverView(account: account, locationManager: locationManager)
                     if !account.isDriver {
                         Button("Refresh account access") {
                             account.refreshClaims()
@@ -220,6 +219,59 @@ struct FirebaseAccountView: View {
                         .tint(TrypsStyle.green)
                 }
             }
+        }
+    }
+}
+
+struct DriverExperienceView: View {
+    @ObservedObject var account: FirebaseAccountStore
+    @ObservedObject var locationManager: PickupLocationManager
+    @State private var isShowingAccount = false
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if account.userID == nil {
+                    VStack(spacing: 16) {
+                        Image(systemName: "steeringwheel")
+                            .font(.system(size: 42))
+                            .foregroundStyle(TrypsStyle.green)
+                        Text("Drive with Tryps")
+                            .font(.title2.bold())
+                            .foregroundStyle(TrypsStyle.ink)
+                        Text("Sign in or create an account to apply to drive and access driver tools.")
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(TrypsStyle.muted)
+                        Button("Sign in or create account") {
+                            isShowingAccount = true
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(TrypsStyle.green)
+                    }
+                    .padding(28)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            Label("Driver account", systemImage: "checkmark.seal.fill")
+                                .font(.headline)
+                                .foregroundStyle(TrypsStyle.green)
+                            FirebaseDriverView(account: account, locationManager: locationManager)
+                            Button("Sign out", role: .destructive) {
+                                account.signOut()
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                        .padding(20)
+                    }
+                }
+            }
+            .background(TrypsStyle.paleGreen.opacity(0.35))
+            .navigationTitle("Drive")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .sheet(isPresented: $isShowingAccount) {
+            FirebaseAccountView(account: account, locationManager: locationManager)
         }
     }
 }
