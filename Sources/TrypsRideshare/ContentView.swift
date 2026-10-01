@@ -528,6 +528,19 @@ struct ContentView: View {
                 }
                 .disabled(rideStore.isWorking)
             }
+            if rideStore.paymentStatus == "refund_pending" {
+                Text("Your ride is cancelled; the refund is still processing.")
+                    .font(.footnote)
+                    .foregroundStyle(TrypsStyle.muted)
+                Button("Retry refund") {
+                    Task { await rideStore.cancelRide() }
+                }
+                .disabled(rideStore.isWorking)
+            } else if rideStore.paymentStatus == "refunded" {
+                Text("Your refund has been issued.")
+                    .font(.footnote)
+                    .foregroundStyle(TrypsStyle.muted)
+            }
             if ["completed", "cancelled"].contains(rideStore.rideStatus ?? "") {
                 Button("Book another ride") {
                     rideStore.resetRide()

@@ -26,6 +26,7 @@ private final class FirebaseDriverStore: ObservableObject {
     private var offerListener: ListenerRegistration?
     private var applicationListener: ListenerRegistration?
     private var driverListener: ListenerRegistration?
+    private var assignedRidesListener: ListenerRegistration?
     private var rideListener: ListenerRegistration?
     private var listeningUserID: String?
     private var listeningAsDriver = false
@@ -50,6 +51,27 @@ private final class FirebaseDriverStore: ObservableObject {
             .addSnapshotListener { [weak self] snapshot, _ in
                 let available = snapshot?.data()?["available"] as? Bool ?? false
                 Task { @MainActor in self?.isAvailable = available }
+            }
+        assignedRidesListener = Firestore.firestore().collection("rides")
+            .whereField("driverUid", isEqualTo: userID)
+            .addSnapshotListener { [weak self] snapshot, _ in
+                let activeRideID = snapshot?.documents.first(where: {
+                    ["driver_assigned", "en_route", "arrived", "in_progress"].contains(
+                        $0.data()["status"] as? String ?? ""
+                    )
+                })?.documentID
+                Task { @MainActor in
+                    guard let self else { return }
+                    if let activeRideID, self.activeRideId != activeRideID {
+                        self.activeRideId = activeRideID
+                        self.listenForActiveRide(activeRideID)
+                    } else if activeRideID == nil, self.activeRideId != nil {
+                        self.activeRideId = nil
+                        self.activeRideStatus = nil
+                        self.rideListener?.remove()
+                        self.rideListener = nil
+                    }
+                }
             }
         offerListener = Firestore.firestore().collection("drivers")
             .document(userID)
@@ -80,14 +102,20 @@ private final class FirebaseDriverStore: ObservableObject {
         offerListener?.remove()
         applicationListener?.remove()
         driverListener?.remove()
+        assignedRidesListener?.remove()
         rideListener?.remove()
         offerListener = nil
         applicationListener = nil
         driverListener = nil
+        assignedRidesListener = nil
         rideListener = nil
         listeningUserID = nil
         listeningAsDriver = false
         offers = []
+        applicationSubmitted = false
+        activeRideId = nil
+        activeRideStatus = nil
+        isAvailable = false
     }
 
     func submitApplication(displayName: String, vehicle: String, plate: String) async {
@@ -107,7 +135,7 @@ private final class FirebaseDriverStore: ObservableObject {
     }
 
     func setAvailability(_ available: Bool, location: CLLocationCoordinate2D?) async {
-        guard let location else {
+        guard available == false || location != nil else {
             errorMessage = "Allow location and tap the location button before going online."
             return
         }
@@ -115,10 +143,11 @@ private final class FirebaseDriverStore: ObservableObject {
         errorMessage = nil
         defer { isWorking = false }
         do {
-            _ = try await call("setDriverAvailability", data: [
-                "available": available,
-                "location": ["latitude": location.latitude, "longitude": location.longitude],
-            ])
+            var data: [String: Any] = ["available": available]
+            if let location {
+                data["location"] = ["latitude": location.latitude, "longitude": location.longitude]
+            }
+            _ = try await call("setDriverAvailability", data: data)
             isAvailable = available
         } catch {
             errorMessage = "Couldn’t update driver availability."
@@ -233,6 +262,16 @@ struct FirebaseDriverView: View {
             if let userID = account.userID {
                 driver.start(userID: userID, isDriver: isDriver)
             }
+        }
+        .onChange(of: account.userID) { _, userID in
+            if let userID {
+                driver.start(userID: userID, isDriver: account.isDriver)
+            } else {
+                driver.stop()
+            }
+        }
+        .onDisappear {
+            driver.stop()
         }
     }
 

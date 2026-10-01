@@ -31,6 +31,7 @@ final class FirebaseRideStore: ObservableObject {
     @Published private(set) var paymentSession: RidePaymentSession?
     @Published private(set) var rideId: String?
     @Published private(set) var rideStatus: String?
+    @Published private(set) var paymentStatus: String?
     @Published private(set) var dispatchMessage: String?
     @Published private(set) var isWorking = false
     @Published var errorMessage: String?
@@ -153,6 +154,7 @@ final class FirebaseRideStore: ObservableObject {
         rideListener = nil
         rideId = nil
         rideStatus = nil
+        paymentStatus = nil
         dispatchMessage = nil
         quotes = [:]
         errorMessage = nil
@@ -164,6 +166,7 @@ final class FirebaseRideStore: ObservableObject {
             .addSnapshotListener { [weak self] snapshot, error in
                 let data = snapshot?.data()
                 let status = data?["status"] as? String
+                let paymentStatus = data?["paymentStatus"] as? String
                 let message = data?["dispatchMessage"] as? String
                 Task { @MainActor in
                     guard let self else { return }
@@ -171,6 +174,7 @@ final class FirebaseRideStore: ObservableObject {
                         self.errorMessage = "Couldn’t refresh your ride status."
                     }
                     self.rideStatus = status
+                    self.paymentStatus = paymentStatus
                     self.dispatchMessage = message
                 }
             }
@@ -307,6 +311,7 @@ final class FirebaseRideStore: ObservableObject {
     @Published private(set) var paymentSession: RidePaymentSession?
     @Published private(set) var rideId: String?
     @Published private(set) var rideStatus: String?
+    @Published private(set) var paymentStatus: String?
     @Published private(set) var dispatchMessage: String?
     @Published private(set) var isWorking = false
     @Published var errorMessage: String?
@@ -324,6 +329,13 @@ final class FirebaseRideStore: ObservableObject {
     func retryPayment() async { }
     func paymentFinished(_ result: RidePaymentResult) { }
     func cancelRide() async { }
-    func resetRide() { }
+    func resetRide() {
+        rideId = nil
+        rideStatus = nil
+        paymentStatus = nil
+        dispatchMessage = nil
+        quotes = [:]
+        errorMessage = nil
+    }
 }
 #endif

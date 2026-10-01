@@ -75,35 +75,40 @@ async function createDriverOffers(rideId, ride) {
     .sort((a, b) => a.distanceKm - b.distanceKm)
     .slice(0, 10);
 
-  if (candidates.length === 0) {
-    await db.collection("rides").doc(rideId).update({
-      status: "searching_driver",
-      dispatchMessage: "No nearby drivers are available yet.",
+  const rideRef = db.collection("rides").doc(rideId);
+  await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(rideRef);
+    if (!snapshot.exists || snapshot.data().status !== "dispatching" ||
+        snapshot.data().paymentStatus !== "succeeded") return;
+
+    if (candidates.length === 0) {
+      transaction.update(rideRef, {
+        status: "searching_driver",
+        dispatchMessage: "No nearby drivers are available yet.",
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return;
+    }
+
+    const expiresAt = Timestamp.fromMillis(Date.now() + 60_000);
+    for (const candidate of candidates) {
+      transaction.set(candidate.ref.collection("offers").doc(rideId), {
+        rideId,
+        status: "pending",
+        pickup: ride.pickup,
+        dropOff: ride.dropOff,
+        rideType: ride.rideType,
+        expiresAt,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    }
+    transaction.update(rideRef, {
+      status: "offered",
+      offerCount: candidates.length,
+      offeredDriverUids: candidates.map((candidate) => candidate.uid),
       updatedAt: FieldValue.serverTimestamp(),
     });
-    return;
-  }
-
-  const batch = db.batch();
-  for (const candidate of candidates) {
-    const offerRef = candidate.ref.collection("offers").doc(rideId);
-    batch.set(offerRef, {
-      rideId,
-      status: "pending",
-      pickup: ride.pickup,
-      dropOff: ride.dropOff,
-      rideType: ride.rideType,
-      expiresAt: Timestamp.fromMillis(Date.now() + 60_000),
-      createdAt: FieldValue.serverTimestamp(),
-    });
-  }
-  batch.update(db.collection("rides").doc(rideId), {
-    status: "offered",
-    offerCount: candidates.length,
-    offeredDriverUids: candidates.map((candidate) => candidate.uid),
-    updatedAt: FieldValue.serverTimestamp(),
   });
-  await batch.commit();
 }
 
 exports.createRideQuote = onCall({ region: REGION }, async (request) => {
@@ -244,6 +249,11 @@ exports.cancelRideBooking = onCall({
       throw new HttpsError("not-found", "Booking not found.");
     }
     const ride = snapshot.data();
+    if (ride.status === "cancelled" && ride.paymentStatus === "refund_pending") {
+      paymentIntentId = ride.paymentIntentId;
+      paymentStatus = ride.paymentStatus;
+      return;
+    }
     if (["in_progress", "completed", "cancelled"].includes(ride.status)) {
       throw new HttpsError("failed-precondition", "This ride can no longer be cancelled.");
     }
@@ -273,7 +283,7 @@ exports.cancelRideBooking = onCall({
     }
   });
 
-  if (paymentIntentId && paymentStatus === "succeeded") {
+  if (paymentIntentId && ["succeeded", "refund_pending"].includes(paymentStatus)) {
     try {
       await getStripe().refunds.create(
         { payment_intent: paymentIntentId },
@@ -499,11 +509,13 @@ exports.stripeWebhook = onRequest({
         return "not-ready";
       }
       const currentRide = rideSnapshot.data();
-      transaction.create(db.collection("stripeEvents").doc(event.id), {
-        type: event.type,
-        processedAt: FieldValue.serverTimestamp(),
-      });
-      if (currentRide.paymentIntentId !== paymentIntent.id) return "ignored";
+      if (currentRide.paymentIntentId !== paymentIntent.id) {
+        transaction.create(db.collection("stripeEvents").doc(event.id), {
+          type: event.type,
+          processedAt: FieldValue.serverTimestamp(),
+        });
+        return "ignored";
+      }
       if (event.type === "payment_intent.succeeded" && currentRide.status === "cancelled") {
         transaction.update(rideRef, {
           paymentStatus: "refund_pending",
@@ -512,6 +524,10 @@ exports.stripeWebhook = onRequest({
         return "refund";
       }
       if (event.type === "payment_intent.succeeded" && currentRide.status === "awaiting_payment") {
+        transaction.create(db.collection("stripeEvents").doc(event.id), {
+          type: event.type,
+          processedAt: FieldValue.serverTimestamp(),
+        });
         transaction.update(rideRef, {
           paymentStatus: "succeeded",
           status: "dispatching",
@@ -520,9 +536,18 @@ exports.stripeWebhook = onRequest({
         });
         return "paid";
       } else if (event.type === "payment_intent.payment_failed" && currentRide.status === "awaiting_payment") {
+        transaction.create(db.collection("stripeEvents").doc(event.id), {
+          type: event.type,
+          processedAt: FieldValue.serverTimestamp(),
+        });
         transaction.update(rideRef, {
           paymentStatus: "failed",
           updatedAt: FieldValue.serverTimestamp(),
+        });
+      } else {
+        transaction.create(db.collection("stripeEvents").doc(event.id), {
+          type: event.type,
+          processedAt: FieldValue.serverTimestamp(),
         });
       }
       return "processed";
@@ -536,7 +561,25 @@ exports.stripeWebhook = onRequest({
         { payment_intent: paymentIntent.id },
         { idempotencyKey: `ride-refund-${rideId}` }
       );
-      await rideRef.update({ paymentStatus: "refunded", updatedAt: FieldValue.serverTimestamp() });
+      await db.runTransaction(async (transaction) => {
+        const eventRef = db.collection("stripeEvents").doc(event.id);
+        const [eventSnapshot, rideSnapshot] = await Promise.all([
+          transaction.get(eventRef),
+          transaction.get(rideRef),
+        ]);
+        if (!eventSnapshot.exists) {
+          transaction.create(eventRef, {
+            type: event.type,
+            processedAt: FieldValue.serverTimestamp(),
+          });
+        }
+        if (rideSnapshot.exists && rideSnapshot.data().paymentStatus === "refund_pending") {
+          transaction.update(rideRef, {
+            paymentStatus: "refunded",
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+        }
+      });
     }
   }
   response.status(200).json({ received: true });
