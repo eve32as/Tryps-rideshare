@@ -984,7 +984,9 @@ struct ContentView: View {
         defer { isRequestingRide = false }
         do {
             var currentFare = selectedFare
-            if let expiresAt = currentFare.flatMap({ ISO8601DateFormatter().date(from: $0.expiresAt) }),
+            let quoteDateFormatter = ISO8601DateFormatter()
+            quoteDateFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let expiresAt = currentFare.flatMap({ quoteDateFormatter.date(from: $0.expiresAt) }),
                expiresAt <= .now {
                 await refreshFareEstimates()
                 currentFare = selectedFare
