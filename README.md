@@ -12,4 +12,6 @@ The project also includes a Swift package so its non-Apple fallback can be built
 swift test
 ```
 
-The app requests location access while in use to identify the pickup point. If access is denied or a route cannot be found, the app reports that state and keeps the map and destination search available. Ride options, fares, payment details, and ride requests are still sample data; payments and ride dispatch are not connected.
+The app requests location access while in use to suggest the pickup point. Pickup and drop-off can both be searched and edited. Ride confirmation stays disabled until both stops are valid and MapKit returns a driving route. If location access is denied, a pickup can be searched manually; search and routing failures are shown in the booking flow.
+
+Ride options, fares, payment details, and ride requests are still sample data; accounts, payments, and ride dispatch are not connected. A backend, identity provider, and payment provider must be selected before those services can be implemented securely.

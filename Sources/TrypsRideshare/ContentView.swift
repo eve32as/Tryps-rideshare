@@ -27,6 +27,14 @@ private struct Destination: Identifiable {
     ]
 }
 
+private enum EditingStop: String, Identifiable {
+    case pickup
+    case dropOff
+
+    var id: String { rawValue }
+    var title: String { self == .pickup ? "Choose a pickup" : "Choose a destination" }
+}
+
 private struct Ride: Identifiable, Hashable {
     let id: String
     let name: String
@@ -44,8 +52,9 @@ private struct Ride: Identifiable, Hashable {
 
 struct ContentView: View {
     @State private var destination = Destination.suggestions[0]
+    @State private var selectedPickup: Destination?
     @State private var selectedRide = Ride.options[0]
-    @State private var isChoosingDestination = false
+    @State private var editingStop: EditingStop?
     @State private var isRideRequested = false
     @State private var route: MKRoute?
     @State private var routeError: String?
@@ -58,9 +67,17 @@ struct ContentView: View {
     )
     @StateObject private var locationManager = PickupLocationManager()
 
+    private var pickupCoordinate: CLLocationCoordinate2D? {
+        selectedPickup?.coordinate ?? locationManager.location?.coordinate
+    }
+
+    private var pickupLabel: String {
+        selectedPickup?.name ?? locationManager.pickupLabel
+    }
+
     private var routeRequestID: String {
-        guard let location = locationManager.location else { return "no-pickup" }
-        return "\(location.coordinate.latitude),\(location.coordinate.longitude)-\(destination.id)"
+        guard let pickupCoordinate else { return "no-pickup-\(destination.id)" }
+        return "\(pickupCoordinate.latitude),\(pickupCoordinate.longitude)-\(destination.id)"
     }
 
     var body: some View {
@@ -68,7 +85,7 @@ struct ContentView: View {
             ZStack(alignment: .top) {
                 RideMapView(
                     cameraPosition: $cameraPosition,
-                    pickup: locationManager.location?.coordinate,
+                    pickup: pickupCoordinate,
                     destination: destination.coordinate,
                     route: route
                 )
@@ -96,10 +113,19 @@ struct ContentView: View {
         .task(id: routeRequestID) {
             await calculateRoute(for: routeRequestID)
         }
-        .sheet(isPresented: $isChoosingDestination) {
+        .sheet(item: $editingStop) { stop in
             DestinationPicker(
-                selectedDestination: $destination,
-                searchRegionCenter: locationManager.location?.coordinate
+                title: stop.title,
+                searchRegionCenter: pickupCoordinate,
+                onSelect: { place in
+                    switch stop {
+                    case .pickup:
+                        selectedPickup = place
+                    case .dropOff:
+                        destination = place
+                    }
+                    editingStop = nil
+                }
             )
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
@@ -112,9 +138,12 @@ struct ContentView: View {
     }
 
     private func calculateRoute(for requestID: String) async {
-        guard let pickup = locationManager.location else {
+        guard let pickupCoordinate,
+              CLLocationCoordinate2DIsValid(pickupCoordinate),
+              CLLocationCoordinate2DIsValid(destination.coordinate) else {
             route = nil
-            routeError = nil
+            routeError = "Choose a pickup and destination"
+            isCalculatingRoute = false
             return
         }
 
@@ -128,7 +157,7 @@ struct ContentView: View {
         }
 
         let request = MKDirections.Request()
-        request.source = MKMapItem(placemark: MKPlacemark(coordinate: pickup.coordinate))
+        request.source = MKMapItem(placemark: MKPlacemark(coordinate: pickupCoordinate))
         request.destination = MKMapItem(placemark: MKPlacemark(coordinate: destination.coordinate))
         request.transportType = .automobile
 
@@ -156,10 +185,20 @@ struct ContentView: View {
             let miles = route.distance / 1_609.344
             return "\(minutes) min · \(miles.formatted(.number.precision(.fractionLength(1)))) mi"
         }
-        if locationManager.authorizationStatus == .denied || locationManager.authorizationStatus == .restricted {
+        if selectedPickup == nil &&
+            (locationManager.authorizationStatus == .denied || locationManager.authorizationStatus == .restricted) {
             return "Allow location to see your route"
         }
-        return routeError ?? "Waiting for pickup location"
+        return routeError ?? (pickupCoordinate == nil ? "Choose a pickup location" : "Choose a destination")
+    }
+
+    private var canRequestRide: Bool {
+        BookingReadiness.canRequestRide(
+            hasPickup: pickupCoordinate.map { CLLocationCoordinate2DIsValid($0) } ?? false,
+            hasDestination: CLLocationCoordinate2DIsValid(destination.coordinate),
+            hasRoute: route != nil,
+            isCalculatingRoute: isCalculatingRoute
+        )
     }
 
     private var header: some View {
@@ -274,6 +313,7 @@ struct ContentView: View {
             }
 
             Button {
+                guard canRequestRide else { return }
                 isRideRequested = true
             } label: {
                 HStack {
@@ -291,6 +331,8 @@ struct ContentView: View {
                 .background(TrypsStyle.green, in: RoundedRectangle(cornerRadius: 17))
             }
             .accessibilityHint("Requests the selected ride to \(destination.name)")
+            .disabled(!canRequestRide)
+            .opacity(canRequestRide ? 1 : 0.55)
             .padding(.horizontal, 22)
             .padding(.top, 10)
             .padding(.bottom, 12)
@@ -318,24 +360,32 @@ struct ContentView: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Pickup")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(TrypsStyle.muted)
-                        Text(locationManager.pickupLabel)
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(TrypsStyle.ink)
-                            .lineLimit(1)
+                    Button {
+                        editingStop = .pickup
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Pickup")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(TrypsStyle.muted)
+                            Text(pickupLabel)
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(TrypsStyle.ink)
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                     Spacer()
                     Button {
-                    locationManager.requestLocation()
+                        selectedPickup = nil
+                        locationManager.requestLocation()
                     } label: {
-                    Image(systemName: locationManager.location == nil ? "location.circle" : "location.fill")
-                        .font(.system(size: 17))
-                        .foregroundStyle(TrypsStyle.green)
+                        Image(systemName: locationManager.location == nil ? "location.circle" : "location.fill")
+                            .font(.system(size: 17))
+                            .foregroundStyle(TrypsStyle.green)
                     }
-                    .accessibilityLabel("Update pickup location")
+                    .accessibilityLabel("Use my current location")
                 }
 
                 Rectangle()
@@ -344,7 +394,7 @@ struct ContentView: View {
                     .padding(.vertical, 9)
 
                 Button {
-                    isChoosingDestination = true
+                    editingStop = .dropOff
                 } label: {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
@@ -438,21 +488,27 @@ private struct RideOptionRow: View {
 
 private struct DestinationPicker: View {
     @Environment(\.dismiss) private var dismiss
-    @Binding var selectedDestination: Destination
+    let title: String
     let searchRegionCenter: CLLocationCoordinate2D?
+    let onSelect: (Destination) -> Void
     @State private var searchText = ""
     @State private var searchResults = Destination.suggestions
     @State private var isSearching = false
+    @State private var searchFailed = false
 
     var body: some View {
         NavigationStack {
             Group {
                 if searchResults.isEmpty && !isSearching {
-                    ContentUnavailableView.search(text: searchText)
+                    ContentUnavailableView(
+                        "No places found",
+                        systemImage: searchFailed ? "wifi.exclamationmark" : "magnifyingglass",
+                        description: Text(searchFailed ? "Check your connection and try again." : "Try a different search.")
+                    )
                 } else {
                     List(searchResults) { destination in
                         Button {
-                            selectedDestination = destination
+                            onSelect(destination)
                             dismiss()
                         } label: {
                             HStack(spacing: 14) {
@@ -485,7 +541,7 @@ private struct DestinationPicker: View {
                 }
             }
             .searchable(text: $searchText, prompt: "Search places")
-            .navigationTitle("Choose a destination")
+            .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -502,6 +558,7 @@ private struct DestinationPicker: View {
     private func searchPlaces() async {
         guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             searchResults = Destination.suggestions
+            searchFailed = false
             isSearching = false
             return
         }
@@ -532,9 +589,11 @@ private struct DestinationPicker: View {
                     coordinate: coordinate
                 )
             }
+            searchFailed = false
         } catch {
             guard !Task.isCancelled else { return }
             searchResults = []
+            searchFailed = true
         }
     }
 }
