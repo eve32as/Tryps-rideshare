@@ -3,7 +3,7 @@ import SwiftUI
 import MapKit
 @preconcurrency import CoreLocation
 
-private enum TrypsStyle {
+enum TrypsStyle {
     static let ink = Color(red: 0.10, green: 0.15, blue: 0.14)
     static let muted = Color(red: 0.47, green: 0.52, blue: 0.50)
     static let green = Color(red: 0.10, green: 0.45, blue: 0.34)
@@ -78,6 +78,8 @@ struct ContentView: View {
     @State private var selectedRide = Ride.options[0]
     @State private var editingStop: EditingStop?
     @State private var isRideRequested = false
+    @State private var isShowingAccount = false
+    @StateObject private var account = FirebaseAccountStore.shared
     @State private var route: MKRoute?
     @State private var routeError: String?
     @State private var isCalculatingRoute = false
@@ -157,6 +159,9 @@ struct ContentView: View {
             )
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $isShowingAccount) {
+            FirebaseAccountView(account: account)
         }
         .alert("Your ride is on its way", isPresented: $isRideRequested) {
             Button("Done", role: .cancel) { }
@@ -259,12 +264,16 @@ struct ContentView: View {
 
             Spacer()
 
-            Image(systemName: "person.crop.circle.fill")
-                .font(.system(size: 24))
-                .foregroundStyle(TrypsStyle.ink)
-                .padding(5)
-                .background(.white.opacity(0.92), in: Circle())
-                .accessibilityHidden(true)
+            Button {
+                isShowingAccount = true
+            } label: {
+                Image(systemName: account.email == nil ? "person.crop.circle" : "person.crop.circle.fill")
+                    .font(.system(size: 24))
+                    .foregroundStyle(TrypsStyle.ink)
+                    .padding(5)
+                    .background(.white.opacity(0.92), in: Circle())
+            }
+            .accessibilityLabel(account.email.map { "Account, signed in as \($0)" } ?? "Sign in or create an account")
         }
     }
 
