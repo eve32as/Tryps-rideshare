@@ -149,6 +149,17 @@ struct RideRequest: Encodable {
     let destination: RideLocation
     let rideType: String
     let scheduledAt: String?
+    let fareQuoteToken: String?
+}
+
+struct FareEstimateRequest: Encodable {
+    let pickup: RideLocation
+    let destination: RideLocation
+    let rideTypes: [String]
+}
+
+private struct FareEstimatesResponse: Decodable {
+    let estimates: [String: FareEstimate]
 }
 
 struct RideRequestResponse: Decodable {
@@ -166,10 +177,14 @@ struct FareEstimate: Decodable {
     let currency: String
     let baseFareCents: Int
     let distanceChargeCents: Int
+    let subtotalCents: Int
+    let multipliedFareCents: Int
     let perKmCents: Int
     let rideTypeMultiplier: Double
     let minimumFareCents: Int
     let minimumApplied: Bool
+    let fareQuoteToken: String
+    let expiresAt: String
 
     var formattedFare: String {
         formatted(amountCents)
@@ -242,8 +257,9 @@ enum RideAPI {
         try await send("/v1/rides", method: "POST", body: request, token: token)
     }
 
-    static func fareEstimate(request: RideRequest) async throws -> FareEstimate {
-        try await send("/v1/fare-estimate", method: "POST", body: request)
+    static func fareEstimates(request: FareEstimateRequest) async throws -> [String: FareEstimate] {
+        let response: FareEstimatesResponse = try await send("/v1/fare-estimate", method: "POST", body: request)
+        return response.estimates
     }
 
     static func rides(token: String) async throws -> [TripStatus] {

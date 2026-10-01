@@ -3,6 +3,7 @@
 Tryps is a SwiftUI iOS rideshare prototype with MapKit place search and directions,
 current-location pickup, Sign in with Apple, driver matching, scheduled rides,
 driver location sharing, saved places, ratings, and Stripe Connect/PaymentSheet.
+Fare estimates use server-side driving routes and signed, time-limited quotes.
 
 ## iOS app
 
@@ -48,16 +49,22 @@ PostGIS or the extension must be enabled by the database administrator.
 The built-in rate limiter uses per-process memory; configure a shared store
 before running multiple API instances.
 
+Enable the Google Routes API and provide `GOOGLE_ROUTES_API_KEY` to the API
+service. Restrict this key to the Routes API, keep it only in the server's secret
+manager, and configure provider quotas and billing alerts. Route lookups have an
+8-second timeout; if routing is unavailable, fare estimates and ride requests
+fail closed rather than silently falling back to straight-line distance.
+
 `PLATFORM_FEE_BPS` is the platform commission in basis points; set this to the
-agreed business rate. Fare estimates are computed on the API from straight-line
-distance, an adjustable distance multiplier, and configurable per-kilometer and
-minimum charges. The final amount is recalculated server-side when requested;
-the straight-line estimate is not a routed quote and must not be treated as a
-production fare policy. Set `FARE_BASE_CENTS`, `FARE_PER_KM_CENTS`,
-`FARE_MINIMUM_CENTS`, and `FARE_DISTANCE_MULTIPLIER` to approved local prices.
-Current sample fares are USD-only; `STRIPE_CONNECT_COUNTRY` must match the
-business's supported country. Driver onboarding return and refresh URLs must be
-HTTPS URLs hosted by your service.
+agreed business rate. The API calculates estimates from Google Routes driving
+distance, rounded to 0.1 km, plus configurable base, per-kilometer, ride-category,
+and minimum charges. Estimates are signed and bound to the requested coordinates
+and ride type for 10 minutes; ride creation charges the verified quote amount
+instead of silently recalculating a different fare. Set `FARE_BASE_CENTS`,
+`FARE_PER_KM_CENTS`, and `FARE_MINIMUM_CENTS` to approved local prices. Current
+sample fares are USD-only; `STRIPE_CONNECT_COUNTRY` must match the business's
+supported country. Driver onboarding return and refresh URLs must be HTTPS URLs
+hosted by your service.
 
 For APNs, configure all of `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_PRIVATE_KEY`,
 and `APNS_HOST` in the server secret manager. Use the `.p8` signing key contents
@@ -73,7 +80,7 @@ reserves that driver for the ride. The driver screen sends a heartbeat and polls
 for assigned rides while open; drivers without fresh location or heartbeat data
 for 2 minutes are excluded from matching. Unpaid ride reservations expire after
 20 minutes. Driver identity/safety verification, server-side ride-history sync,
-configurable cancellation fees, and road-route-based pricing are not implemented.
+and configurable cancellation fees are not implemented.
 Riders can
 request a full refund for a confirmed ride before it is completed; the API
 reverses the connected-driver transfer and platform fee through Stripe. Refund
@@ -91,8 +98,7 @@ status and the driver's latest location and expire 24 hours after the trip's
 scheduled, completed, or created time. Ratings are one per participant and only
 available after completion; saved places are private to the signed-in rider.
 
-The server-calculated estimate is charged when the rider confirms payment; the
-distance estimate is not a real road route or a finalized production pricing
-policy. Configure Stripe in test mode first and
-complete operational, legal, safety, privacy, and payment testing before
-accepting live rides or charges.
+The signed fare quote is charged when the rider confirms payment; the sample rate
+card is not a finalized production pricing policy. Configure Stripe in test mode
+first and complete operational, legal, safety, privacy, and payment testing
+before accepting live rides or charges.

@@ -6,7 +6,9 @@ import Stripe from "stripe";
 import { createRemoteJWKSet, importPKCS8, jwtVerify, SignJWT } from "jose";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readConfig } from "./config.js";
-import { calculateRideFare, isValidLocation } from "./validation.js";
+import { isValidLocation } from "./validation.js";
+import { createFareQuote, verifyFareQuote } from "./fare-quotes.js";
+import { getDrivingDistanceMeters, RouteProviderError } from "./routes.js";
 
 const config = readConfig();
 const { Pool } = pg;
@@ -271,13 +273,43 @@ app.delete("/v1/notifications/device", authenticate, asyncRoute(async (req, res)
 }));
 
 app.post("/v1/fare-estimate", asyncRoute(async (req, res) => {
-  const { pickup, destination, rideType } = req.body ?? {};
+  const { pickup, destination } = req.body ?? {};
   if (!validateLocationPair(req.body)) {
     return res.status(400).json({ error: "Valid pickup and destination are required." });
   }
-  const estimate = calculateRideFare(pickup, destination, rideType, config.farePricing);
-  if (!estimate) return res.status(400).json({ error: "This ride type or trip distance is not supported." });
-  return res.json({ ...estimate, currency: config.currency });
+  const isBatch = Array.isArray(req.body.rideTypes);
+  const rideTypes = isBatch ? req.body.rideTypes : [req.body.rideType];
+  const supportedRideTypes = Object.keys(config.farePricing.rideTypeMultipliers);
+  if (
+    rideTypes.length === 0 ||
+    rideTypes.length > supportedRideTypes.length ||
+    new Set(rideTypes).size !== rideTypes.length ||
+    rideTypes.some((rideType) => !supportedRideTypes.includes(rideType))
+  ) {
+    return res.status(400).json({ error: "Choose one or more supported ride types." });
+  }
+  const routeDistanceMeters = await getDrivingDistanceMeters(
+    pickup,
+    destination,
+    config.googleRoutesApiKey,
+  );
+  const estimates = await Promise.all(rideTypes.map(async (rideType) => {
+    const estimate = await createFareQuote({
+      pickup,
+      destination,
+      rideType,
+      routeDistanceMeters,
+      pricing: config.farePricing,
+      currency: config.currency,
+      signingKey: sessionKey,
+    });
+    return [rideType, estimate];
+  }));
+  if (estimates.some(([, estimate]) => !estimate)) {
+    return res.status(400).json({ error: "This trip distance is not supported." });
+  }
+  if (!isBatch) return res.json(estimates[0][1]);
+  return res.json({ estimates: Object.fromEntries(estimates) });
 }));
 
 app.get("/v1/shared-trips/:token", asyncRoute(async (req, res) => {
@@ -509,12 +541,20 @@ app.post("/v1/driver/rides/:rideId/complete", authenticate, requireRole("driver"
 }));
 
 app.post("/v1/rides", authenticate, requireRole("rider"), asyncRoute(async (req, res) => {
-  const { pickup, destination, rideType, scheduledAt } = req.body ?? {};
+  const { pickup, destination, rideType, scheduledAt, fareQuoteToken } = req.body ?? {};
   if (!validateLocationPair(req.body)) {
     return res.status(400).json({ error: "Valid pickup, destination, and ride type are required." });
   }
-  const fare = calculateRideFare(pickup, destination, rideType, config.farePricing);
-  if (!fare) return res.status(400).json({ error: "This ride type or trip distance is not supported." });
+  const fare = await verifyFareQuote({
+    token: fareQuoteToken,
+    pickup,
+    destination,
+    rideType,
+    signingKey: sessionKey,
+  });
+  if (!fare) {
+    return res.status(409).json({ error: "Your fare quote expired or no longer matches this trip. Refresh the quote and try again." });
+  }
   const { amountCents } = fare;
 
   const rideId = randomUUID();
@@ -1190,6 +1230,9 @@ const refundReconciliation = setInterval(reconcilePendingRideRefunds, 60_000);
 refundReconciliation.unref();
 
 app.use((error, _req, res, _next) => {
+  if (error instanceof RouteProviderError) {
+    return res.status(503).json({ error: "Driving routes are temporarily unavailable. Please try again shortly." });
+  }
   console.error("API request failed:", error);
   if (res.headersSent) return;
   return res.status(500).json({ error: "The request could not be completed." });

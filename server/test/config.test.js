@@ -9,6 +9,7 @@ const validEnvironment = {
   SESSION_SECRET: "a".repeat(32),
   STRIPE_SECRET_KEY: "sk_test_placeholder",
   STRIPE_WEBHOOK_SECRET: "whsec_placeholder",
+  GOOGLE_ROUTES_API_KEY: "routes-api-key-placeholder",
   STRIPE_CONNECT_COUNTRY: "US",
   DRIVER_ONBOARDING_RETURN_URL: "https://tryps.app/return",
   DRIVER_ONBOARDING_REFRESH_URL: "https://tryps.app/refresh",
@@ -86,32 +87,31 @@ test("calculates server-side estimated fares and rejects unsupported ride types 
     baseCents: 300,
     perKmCents: 150,
     minimumCents: 500,
-    distanceMultiplier: 1.35,
     rideTypeMultipliers: { "tryps-go": 1, "tryps-comfort": 1.4, "tryps-xl": 1.8 },
   };
-  const pickup = { latitude: 37.7793, longitude: -122.4193 };
-  const destination = { latitude: 37.7893, longitude: -122.4193 };
-  const estimate = calculateRideFare(pickup, destination, "tryps-go", pricing);
+  const routeDistanceMeters = 2_000;
+  const estimate = calculateRideFare(routeDistanceMeters, "tryps-go", pricing);
   assert.ok(estimate.amountCents > pricing.minimumCents);
-  assert.ok(estimate.estimatedDistanceKm > 1);
-  assert.equal(estimate.amountCents, estimate.baseFareCents + estimate.distanceChargeCents);
+  assert.equal(estimate.estimatedDistanceKm, 2);
+  assert.equal(estimate.amountCents, estimate.multipliedFareCents);
+  assert.equal(estimate.subtotalCents, estimate.baseFareCents + estimate.distanceChargeCents);
   assert.equal(estimate.distanceChargeCents, Math.round(estimate.estimatedDistanceKm * estimate.perKmCents));
   assert.equal(estimate.minimumApplied, false);
   assert.equal(
-    calculateRideFare(pickup, destination, "tryps-xl", pricing).amountCents,
+    calculateRideFare(routeDistanceMeters, "tryps-xl", pricing).amountCents,
     Math.round(estimate.amountCents * 1.8),
   );
   const minimumFare = calculateRideFare(
-    pickup,
-    pickup,
+    1,
     "tryps-go",
     { ...pricing, minimumCents: 1000 },
   );
   assert.equal(minimumFare.amountCents, 1000);
   assert.equal(minimumFare.minimumApplied, true);
-  assert.equal(calculateRideFare(pickup, destination, "unknown", pricing), undefined);
-  assert.equal(calculateRideFare(pickup, { latitude: 0, longitude: 0 }, "tryps-go", pricing), undefined);
-  assert.equal(calculateRideFare(pickup, destination, "toString", pricing), undefined);
+  assert.equal(calculateRideFare(routeDistanceMeters, "unknown", pricing), undefined);
+  assert.equal(calculateRideFare(501_000, "tryps-go", pricing), undefined);
+  assert.equal(calculateRideFare(Number.NaN, "tryps-go", pricing), undefined);
+  assert.equal(calculateRideFare(routeDistanceMeters, "toString", pricing), undefined);
 });
 
 test("validates fare configuration and optional APNs settings", () => {

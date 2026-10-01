@@ -4,6 +4,7 @@ const required = [
   "SESSION_SECRET",
   "STRIPE_SECRET_KEY",
   "STRIPE_WEBHOOK_SECRET",
+  "GOOGLE_ROUTES_API_KEY",
   "STRIPE_CONNECT_COUNTRY",
   "DRIVER_ONBOARDING_RETURN_URL",
   "DRIVER_ONBOARDING_REFRESH_URL",
@@ -54,11 +55,9 @@ export function readConfig(env = process.env) {
   const fareBaseCents = Number(env.FARE_BASE_CENTS ?? 300);
   const farePerKmCents = Number(env.FARE_PER_KM_CENTS ?? 150);
   const fareMinimumCents = Number(env.FARE_MINIMUM_CENTS ?? 500);
-  const fareDistanceMultiplier = Number(env.FARE_DISTANCE_MULTIPLIER ?? 1.35);
   if (![fareBaseCents, farePerKmCents, fareMinimumCents].every((amount) =>
-    Number.isSafeInteger(amount) && amount > 0) ||
-    !Number.isFinite(fareDistanceMultiplier) || fareDistanceMultiplier < 1 || fareDistanceMultiplier > 3) {
-    throw new Error("Fare configuration must use positive cent amounts and a distance multiplier between 1 and 3.");
+    Number.isSafeInteger(amount) && amount > 0)) {
+    throw new Error("Fare configuration must use positive cent amounts.");
   }
 
   return {
@@ -67,6 +66,7 @@ export function readConfig(env = process.env) {
     sessionSecret: env.SESSION_SECRET,
     stripeSecretKey: env.STRIPE_SECRET_KEY,
     stripeWebhookSecret: env.STRIPE_WEBHOOK_SECRET,
+    googleRoutesApiKey: env.GOOGLE_ROUTES_API_KEY,
     stripeConnectCountry: env.STRIPE_CONNECT_COUNTRY,
     driverOnboardingReturnUrl: env.DRIVER_ONBOARDING_RETURN_URL,
     driverOnboardingRefreshUrl: env.DRIVER_ONBOARDING_REFRESH_URL,
@@ -82,7 +82,6 @@ export function readConfig(env = process.env) {
       baseCents: fareBaseCents,
       perKmCents: farePerKmCents,
       minimumCents: fareMinimumCents,
-      distanceMultiplier: fareDistanceMultiplier,
       rideTypeMultipliers: {
         "tryps-go": 1,
         "tryps-comfort": 1.4,

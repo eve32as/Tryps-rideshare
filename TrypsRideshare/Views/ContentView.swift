@@ -436,7 +436,7 @@ struct ContentView: View {
             }
 
             if let selectedFare {
-                Text("Approx. \(selectedFare.estimatedDistanceKm.formatted(.number.precision(.fractionLength(1)))) km · estimated fare")
+                Text("\(selectedFare.estimatedDistanceKm.formatted(.number.precision(.fractionLength(1)))) km driving distance · fare locked for 10 min")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(TrypsStyle.muted)
 
@@ -447,16 +447,18 @@ struct ContentView: View {
                             "Distance (\(selectedFare.estimatedDistanceKm.formatted(.number.precision(.fractionLength(1)))) km × \(selectedFare.formatted(selectedFare.perKmCents))/km)",
                             value: selectedFare.formatted(selectedFare.distanceChargeCents)
                         )
+                        fareBreakdownRow("Distance subtotal", value: selectedFare.formatted(selectedFare.subtotalCents))
                         fareBreakdownRow(
                             "Ride category",
                             value: "\(selectedFare.rideTypeMultiplier.formatted(.number.precision(.fractionLength(2))))×"
                         )
+                        fareBreakdownRow("After ride category", value: selectedFare.formatted(selectedFare.multipliedFareCents))
                         if selectedFare.minimumApplied {
                             fareBreakdownRow("Minimum fare applied", value: selectedFare.formatted(selectedFare.minimumFareCents))
                         }
                         Divider()
                         fareBreakdownRow("Estimated total", value: selectedFare.formattedFare, emphasized: true)
-                        Text("Distance is a straight-line estimate, not road routing. Your final fare may differ.")
+                        Text("Driving distance is rounded to 0.1 km. This quote is held for 10 minutes; request the ride before it expires.")
                             .font(.system(size: 11))
                             .foregroundStyle(TrypsStyle.muted)
                     }
@@ -934,17 +936,13 @@ struct ContentView: View {
         let pickup = RideLocation(label: self.pickup, coordinate: pickupCoordinate)
         let destination = RideLocation(label: self.destination, coordinate: destinationCoordinate)
         do {
-            var estimates: [String: FareEstimate] = [:]
-            for ride in RideOption.all {
-                let request = RideRequest(
-                    pickup: pickup,
-                    destination: destination,
-                    rideType: ride.id,
-                    scheduledAt: nil
-                )
-                estimates[ride.id] = try await RideAPI.fareEstimate(request: request)
-                guard fareEstimateRequestID == requestID else { return }
-            }
+            let request = FareEstimateRequest(
+                pickup: pickup,
+                destination: destination,
+                rideTypes: RideOption.all.map(\.id)
+            )
+            let estimates = try await RideAPI.fareEstimates(request: request)
+            guard fareEstimateRequestID == requestID else { return }
             fareEstimates = estimates
         } catch {
             if fareEstimateRequestID == requestID {
@@ -985,11 +983,22 @@ struct ContentView: View {
         isRequestingRide = true
         defer { isRequestingRide = false }
         do {
+            var currentFare = selectedFare
+            if let expiresAt = currentFare.flatMap({ ISO8601DateFormatter().date(from: $0.expiresAt) }),
+               expiresAt <= .now {
+                await refreshFareEstimates()
+                currentFare = selectedFare
+            }
+            guard let fareQuoteToken = currentFare?.fareQuoteToken else {
+                errorMessage = "Get a fresh fare estimate before requesting this ride."
+                return
+            }
             let request = RideRequest(
                 pickup: RideLocation(label: trimmedPickup, coordinate: pickupCoordinate),
                 destination: RideLocation(label: trimmedDestination, coordinate: destinationCoordinate),
                 rideType: selectedRide.id,
-                scheduledAt: scheduleForLater ? ISO8601DateFormatter().string(from: scheduledPickup) : nil
+                scheduledAt: scheduleForLater ? ISO8601DateFormatter().string(from: scheduledPickup) : nil,
+                fareQuoteToken: fareQuoteToken
             )
             let response = try await RideAPI.requestRide(token: sessionToken, request: request)
             if response.status == "scheduled" {
