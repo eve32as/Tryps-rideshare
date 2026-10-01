@@ -6,6 +6,58 @@ import Security
 import StripePaymentSheet
 import SwiftUI
 import UIKit
+import UserNotifications
+
+extension Notification.Name {
+    static let trypsAPNsTokenRegistered = Notification.Name("trypsAPNsTokenRegistered")
+    static let trypsRideNotificationOpened = Notification.Name("trypsRideNotificationOpened")
+}
+
+final class TrypsAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    static let deviceTokenDefaultsKey = "trypsAPNsDeviceToken"
+
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        UNUserNotificationCenter.current().delegate = self
+        return true
+    }
+
+    func application(
+        _ application: UIApplication,
+        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+    ) {
+        let token = deviceToken.map { String(format: "%02x", $0) }.joined()
+        UserDefaults.standard.set(token, forKey: Self.deviceTokenDefaultsKey)
+        NotificationCenter.default.post(name: .trypsAPNsTokenRegistered, object: token)
+    }
+
+    func application(
+        _ application: UIApplication,
+        didFailToRegisterForRemoteNotificationsWithError error: Error
+    ) {
+        print("APNs registration failed: \(error.localizedDescription)")
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound, .badge])
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let rideID = response.notification.request.content.userInfo["rideId"] as? String
+        NotificationCenter.default.post(name: .trypsRideNotificationOpened, object: rideID)
+        completionHandler()
+    }
+}
 
 enum AccountRole: String, CaseIterable, Identifiable {
     case rider
@@ -108,6 +160,17 @@ struct RideRequestResponse: Decodable {
     let shareUrl: URL
 }
 
+struct FareEstimate: Decodable {
+    let amountCents: Int
+    let estimatedDistanceKm: Double
+    let currency: String
+
+    var formattedFare: String {
+        let amount = Double(amountCents) / 100
+        return amount.formatted(.currency(code: currency.uppercased()))
+    }
+}
+
 struct PendingPayment: Identifiable {
     let id: String
     let clientSecret: String
@@ -157,8 +220,21 @@ enum RideAPI {
         return SignedInSession(sessionToken: response.sessionToken, role: role)
     }
 
+    static func registerDeviceToken(token: String, deviceToken: String) async throws {
+        let _: DeviceTokenResponse = try await send(
+            "/v1/notifications/device",
+            method: "PUT",
+            body: DeviceTokenRequest(deviceToken: deviceToken),
+            token: token
+        )
+    }
+
     static func requestRide(token: String, request: RideRequest) async throws -> RideRequestResponse {
         try await send("/v1/rides", method: "POST", body: request, token: token)
+    }
+
+    static func fareEstimate(request: RideRequest) async throws -> FareEstimate {
+        try await send("/v1/fare-estimate", method: "POST", body: request)
     }
 
     static func rides(token: String) async throws -> [TripStatus] {
@@ -196,6 +272,15 @@ enum RideAPI {
         let _: CancellationResponse = try await send(
             "/v1/rides/\(rideID)",
             method: "DELETE",
+            body: EmptyBody(),
+            token: token
+        )
+    }
+
+    static func refundRide(token: String, rideID: String) async throws {
+        let _: RefundResponse = try await send(
+            "/v1/rides/\(rideID)/refund",
+            method: "POST",
             body: EmptyBody(),
             token: token
         )
@@ -320,6 +405,20 @@ private struct APIErrorResponse: Decodable {
 
 private struct CancellationResponse: Decodable {
     let cancelled: Bool
+}
+
+private struct RefundResponse: Decodable {
+    let cancelled: Bool
+    let refunded: Bool
+    let refundId: String
+}
+
+private struct DeviceTokenRequest: Encodable {
+    let deviceToken: String
+}
+
+private struct DeviceTokenResponse: Decodable {
+    let registered: Bool
 }
 
 private struct RatingRequest: Encodable {
@@ -602,8 +701,14 @@ final class PickupLocationManager: NSObject, ObservableObject, CLLocationManager
         switch manager.authorizationStatus {
         case .notDetermined:
             manager.requestWhenInUseAuthorization()
-        case .authorizedAlways, .authorizedWhenInUse:
+        case .authorizedAlways:
+            manager.allowsBackgroundLocationUpdates = true
+            manager.pausesLocationUpdatesAutomatically = false
+            manager.showsBackgroundLocationIndicator = true
             manager.startUpdatingLocation()
+        case .authorizedWhenInUse:
+            manager.requestAlwaysAuthorization()
+            errorMessage = "Allow Tryps location access Always to keep your driver location updated while the app is in the background."
         case .denied, .restricted:
             errorMessage = "Enable location access in Settings to go online."
         @unknown default:
@@ -614,12 +719,24 @@ final class PickupLocationManager: NSObject, ObservableObject, CLLocationManager
     func stopTracking() {
         tracksContinuously = false
         manager.stopUpdatingLocation()
+        manager.allowsBackgroundLocationUpdates = false
+        manager.showsBackgroundLocationIndicator = false
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        if manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse {
+        if manager.authorizationStatus == .authorizedAlways {
             if tracksContinuously {
+                manager.allowsBackgroundLocationUpdates = true
+                manager.pausesLocationUpdatesAutomatically = false
+                manager.showsBackgroundLocationIndicator = true
                 manager.startUpdatingLocation()
+            } else {
+                manager.requestLocation()
+            }
+        } else if manager.authorizationStatus == .authorizedWhenInUse {
+            if tracksContinuously {
+                manager.requestAlwaysAuthorization()
+                errorMessage = "Allow Tryps location access Always to keep your driver location updated while the app is in the background."
             } else {
                 manager.requestLocation()
             }

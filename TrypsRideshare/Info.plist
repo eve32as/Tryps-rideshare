@@ -23,7 +23,14 @@
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.travel</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Tryps uses your location to set your pickup point and find nearby drivers.</string>
+	<string>Tryps uses your location to set your pickup point and find nearby drivers while you use the app.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>When you choose to go online as a driver, Tryps uses your location in the background to match nearby riders and keep your trip status current. Tracking stops when you go offline.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+		<string>remote-notification</string>
+	</array>
 	<key>TRYPS_API_BASE_URL</key>
 	<string>$(TRYPS_API_BASE_URL)</string>
 	<key>STRIPE_PUBLISHABLE_KEY</key>

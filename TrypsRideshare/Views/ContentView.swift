@@ -2,25 +2,25 @@ import SwiftData
 import SwiftUI
 import MapKit
 import StripePaymentSheet
+import UIKit
+import UserNotifications
 
 private enum AppTab {
     case ride
     case activity
     case drive
 }
-
 private struct RideOption: Identifiable {
     let id: String
     let name: String
     let detail: String
-    let price: String
     let arrival: String
     let symbol: String
 
     static let all = [
-        RideOption(id: "tryps-go", name: "Tryps Go", detail: "Everyday rides", price: "$12.50", arrival: "3 min", symbol: "car.side.fill"),
-        RideOption(id: "tryps-comfort", name: "Comfort", detail: "More room to relax", price: "$18.20", arrival: "5 min", symbol: "car.side.rear.open.fill"),
-        RideOption(id: "tryps-xl", name: "Tryps XL", detail: "Groups up to 6", price: "$24.80", arrival: "8 min", symbol: "van.side.fill")
+        RideOption(id: "tryps-go", name: "Tryps Go", detail: "Everyday rides", arrival: "3 min", symbol: "car.side.fill"),
+        RideOption(id: "tryps-comfort", name: "Comfort", detail: "More room to relax", arrival: "5 min", symbol: "car.side.rear.open.fill"),
+        RideOption(id: "tryps-xl", name: "Tryps XL", detail: "Groups up to 6", arrival: "8 min", symbol: "van.side.fill")
     ]
 }
 
@@ -58,6 +58,9 @@ struct ContentView: View {
     @State private var scheduleForLater = false
     @State private var scheduledPickup = Calendar.current.date(byAdding: .hour, value: 1, to: .now) ?? .now.addingTimeInterval(3600)
     @State private var cloudRides: [TripStatus] = []
+    @State private var fareEstimates: [String: FareEstimate] = [:]
+    @State private var fareEstimateRequestID = UUID()
+    @State private var isEstimatingFare = false
     @State private var savedPlaces: [SavedPlace] = []
     @State private var isSavedPlacesPresented = false
     @State private var isRatingPresented = false
@@ -78,6 +81,15 @@ struct ContentView: View {
 
     private var selectedRide: RideOption {
         RideOption.all.first(where: { $0.id == selectedRideID }) ?? RideOption.all[0]
+    }
+
+    private var selectedFare: FareEstimate? {
+        fareEstimates[selectedRideID]
+    }
+
+    private var shouldTrackDriverLocation: Bool {
+        accountRole == .driver &&
+            (driverAvailable || driverRides.contains(where: { $0.status == "confirmed" }))
     }
 
     private var currentSelectedSavedPlace: RideLocation? {
@@ -114,6 +126,7 @@ struct ContentView: View {
             AppleSignInSheet {
                 sessionToken = SessionStore.loadToken()
                 accountRole = SessionStore.loadRole()
+                Task { await registerForPushNotifications() }
             }
             .presentationDetents([.medium])
             .presentationDragIndicator(.visible)
@@ -156,10 +169,25 @@ struct ContentView: View {
         }
         .onAppear {
             locationManager.requestLocation()
+            if sessionToken != nil {
+                Task { await registerForPushNotifications() }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .trypsAPNsTokenRegistered)) { notification in
+            guard let deviceToken = notification.object as? String, let sessionToken else { return }
+            Task { try? await RideAPI.registerDeviceToken(token: sessionToken, deviceToken: deviceToken) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .trypsRideNotificationOpened)) { notification in
+            selectedTab = accountRole == .driver ? .drive : .activity
+            if accountRole == .rider {
+                Task { await refreshRiderDashboard() }
+            } else {
+                Task { await refreshDriverDashboard() }
+            }
         }
         .onChange(of: selectedTab) { _, tab in
-            if tab != .drive || accountRole != .driver {
-                locationManager.stopTracking()
+            if tab == .drive, accountRole == .driver {
+                Task { await refreshDriverDashboard() }
             }
         }
         .task(id: selectedTab) {
@@ -179,17 +207,13 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active, selectedTab == .drive, accountRole == .driver {
                 Task { await refreshDriverDashboard() }
-            } else if phase != .active, accountRole == .driver, driverAvailable, let sessionToken {
-                locationManager.stopTracking()
-                driverAvailable = false
-                Task { try? await RideAPI.setDriverAvailability(token: sessionToken, available: false) }
             }
         }
         .onReceive(locationManager.$coordinate.compactMap { $0 }) { coordinate in
             if pickup == "Current location" || locationManager.address == pickup {
                 pickupCoordinate = coordinate
             }
-            if selectedTab == .drive, driverAvailable, let sessionToken {
+            if shouldTrackDriverLocation, let sessionToken {
                 Task { try? await RideAPI.updateDriverLocation(token: sessionToken, coordinate: coordinate) }
             }
         }
@@ -209,8 +233,13 @@ struct ContentView: View {
             if newValue != resolvedDestinationLabel {
                 destinationCoordinate = nil
                 resolvedDestinationLabel = nil
+                fareEstimates = [:]
             }
         }
+        .onChange(of: pickupCoordinate?.latitude) { _, _ in Task { await refreshFareEstimates() } }
+        .onChange(of: pickupCoordinate?.longitude) { _, _ in Task { await refreshFareEstimates() } }
+        .onChange(of: destinationCoordinate?.latitude) { _, _ in Task { await refreshFareEstimates() } }
+        .onChange(of: destinationCoordinate?.longitude) { _, _ in Task { await refreshFareEstimates() } }
     }
 
     private var header: some View {
@@ -306,7 +335,7 @@ struct ContentView: View {
                     Text(isRequestingRide ? "Finding a driver…" : "Request \(selectedRide.name)")
                         .font(.system(size: 16, weight: .semibold))
                     Spacer()
-                    Text(selectedRide.price)
+                    Text(selectedFare?.formattedFare ?? (isEstimatingFare ? "…" : "Estimate unavailable"))
                         .font(.system(size: 16, weight: .bold))
                     Image(systemName: "arrow.right")
                         .font(.system(size: 13, weight: .bold))
@@ -317,7 +346,7 @@ struct ContentView: View {
                 .frame(height: 56)
                 .background(TrypsStyle.accent, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
-            .disabled(isRequestingRide || destinationCoordinate == nil || pickupCoordinate == nil)
+            .disabled(isRequestingRide || isEstimatingFare || selectedFare == nil || destinationCoordinate == nil || pickupCoordinate == nil)
             .opacity(destinationCoordinate == nil || pickupCoordinate == nil ? 0.55 : 1)
             .padding(.horizontal, 20)
             .padding(.top, 10)
@@ -395,11 +424,21 @@ struct ContentView: View {
                     Button {
                         selectedRideID = ride.id
                     } label: {
-                        RideOptionRow(ride: ride, isSelected: ride.id == selectedRideID)
+                        RideOptionRow(
+                            ride: ride,
+                            fare: fareEstimates[ride.id],
+                            isSelected: ride.id == selectedRideID
+                        )
                     }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(ride.id == selectedRideID ? .isSelected : [])
                 }
+            }
+
+            if let selectedFare {
+                Text("Approx. \(selectedFare.estimatedDistanceKm.formatted(.number.precision(.fractionLength(1)))) km · estimated fare")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(TrypsStyle.muted)
             }
 
             Toggle("Schedule this ride", isOn: $scheduleForLater)
@@ -440,7 +479,7 @@ struct ContentView: View {
                                 trip: trip,
                                 localShareURL: bookings.first(where: { $0.rideID == trip.id })?.shareURL,
                                 onRate: { beginRating(rideID: trip.id, target: "driver") },
-                                onCancel: { Task { await cancelScheduledRide(trip.id) } }
+                                onCancel: { Task { await cancelRide(trip) } }
                             )
                         }
                     }
@@ -567,6 +606,11 @@ struct ContentView: View {
                         .background(TrypsStyle.accent, in: RoundedRectangle(cornerRadius: 17))
                     }
                     .disabled(isDriverLoading)
+                    if driverAvailable {
+                        Text("While online, your location is shared to match nearby riders and stays active in the background. Go offline to stop sharing.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(TrypsStyle.muted)
+                    }
                 } else {
                     Label("On a ride", systemImage: "car.side.fill")
                         .font(.system(size: 15, weight: .semibold))
@@ -654,8 +698,10 @@ struct ContentView: View {
             driverOnboardingComplete = profile.onboardingComplete
             driverAvailable = profile.available
             driverRides = try await RideAPI.assignedRides(token: sessionToken)
-            if driverAvailable {
+            if shouldTrackDriverLocation {
                 locationManager.startTracking()
+            } else {
+                locationManager.stopTracking()
             }
             return true
         } catch {
@@ -799,6 +845,26 @@ struct ContentView: View {
     }
 
     @MainActor
+    private func registerForPushNotifications() async {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        if settings.authorizationStatus == .notDetermined {
+            do {
+                _ = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
+            } catch {
+                return
+            }
+        }
+        let updatedSettings = await UNUserNotificationCenter.current().notificationSettings()
+        guard updatedSettings.authorizationStatus == .authorized ||
+                updatedSettings.authorizationStatus == .provisional else { return }
+        UIApplication.shared.registerForRemoteNotifications()
+        if let deviceToken = UserDefaults.standard.string(forKey: TrypsAppDelegate.deviceTokenDefaultsKey),
+           let sessionToken {
+            try? await RideAPI.registerDeviceToken(token: sessionToken, deviceToken: deviceToken)
+        }
+    }
+
+    @MainActor
     private func submitRating(rideID: String, stars: Int, comment: String, token: String) async {
         do {
             try await RideAPI.rateRide(token: token, rideID: rideID, stars: stars, comment: comment)
@@ -810,10 +876,53 @@ struct ContentView: View {
     }
 
     @MainActor
-    private func cancelScheduledRide(_ rideID: String) async {
+    private func refreshFareEstimates() async {
+        guard let pickupCoordinate, let destinationCoordinate else {
+            fareEstimateRequestID = UUID()
+            fareEstimates = [:]
+            isEstimatingFare = false
+            return
+        }
+        let requestID = UUID()
+        fareEstimateRequestID = requestID
+        isEstimatingFare = true
+        fareEstimates = [:]
+        defer {
+            if fareEstimateRequestID == requestID {
+                isEstimatingFare = false
+            }
+        }
+        let pickup = RideLocation(label: self.pickup, coordinate: pickupCoordinate)
+        let destination = RideLocation(label: self.destination, coordinate: destinationCoordinate)
+        do {
+            var estimates: [String: FareEstimate] = [:]
+            for ride in RideOption.all {
+                let request = RideRequest(
+                    pickup: pickup,
+                    destination: destination,
+                    rideType: ride.id,
+                    scheduledAt: nil
+                )
+                estimates[ride.id] = try await RideAPI.fareEstimate(request: request)
+                guard fareEstimateRequestID == requestID else { return }
+            }
+            fareEstimates = estimates
+        } catch {
+            if fareEstimateRequestID == requestID {
+                fareEstimates = [:]
+            }
+        }
+    }
+
+    @MainActor
+    private func cancelRide(_ ride: TripStatus) async {
         guard let sessionToken else { return }
         do {
-            try await RideAPI.cancelRide(token: sessionToken, rideID: rideID)
+            if ride.status == "confirmed" {
+                try await RideAPI.refundRide(token: sessionToken, rideID: ride.id)
+            } else {
+                try await RideAPI.cancelRide(token: sessionToken, rideID: ride.id)
+            }
             await refreshRiderDashboard()
         } catch {
             errorMessage = error.localizedDescription
@@ -849,7 +958,7 @@ struct ContentView: View {
                     pickup: trimmedPickup,
                     destination: trimmedDestination,
                     rideName: selectedRide.name,
-                    fare: selectedRide.price,
+                    fare: Self.formatFare(response.amountCents, currency: response.currency),
                     rideID: response.rideId,
                     shareURL: response.shareUrl.absoluteString,
                     status: response.status
@@ -867,12 +976,16 @@ struct ContentView: View {
                 pickup: trimmedPickup,
                 destination: trimmedDestination,
                 rideName: selectedRide.name,
-                fare: selectedRide.price,
+                fare: Self.formatFare(response.amountCents, currency: response.currency),
                 shareURL: response.shareUrl
             )
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private static func formatFare(_ amountCents: Int, currency: String) -> String {
+        (Double(amountCents) / 100).formatted(.currency(code: currency.uppercased()))
     }
 
     @MainActor
@@ -965,6 +1078,7 @@ struct ContentView: View {
 
 private struct RideOptionRow: View {
     let ride: RideOption
+    let fare: FareEstimate?
     let isSelected: Bool
 
     var body: some View {
@@ -987,7 +1101,7 @@ private struct RideOptionRow: View {
 
             Spacer(minLength: 4)
 
-            Text(ride.price)
+            Text(fare?.formattedFare ?? "—")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(TrypsStyle.ink)
         }
@@ -1147,6 +1261,7 @@ private struct TripActivityRow: View {
     let onRate: () -> Void
     let onCancel: () -> Void
     @State private var isSafetyCenterPresented = false
+    @State private var isRefundConfirmationPresented = false
 
     private var tripShareURL: URL? {
         localShareURL.flatMap(URL.init(string:))
@@ -1172,6 +1287,11 @@ private struct TripActivityRow: View {
             Label(trip.destination, systemImage: "mappin.and.ellipse")
             if let scheduledAt = trip.scheduledAt, let date = ISO8601DateFormatter().date(from: scheduledAt) {
                 Label(date.formatted(date: .abbreviated, time: .shortened), systemImage: "clock")
+            }
+            if trip.status == "refund_pending" {
+                Label("Full refund is processing. Your driver is not assigned to new rides.", systemImage: "arrow.uturn.backward.circle")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(TrypsStyle.muted)
             }
             if let coordinate = driverCoordinate, trip.status == "confirmed" {
                 Map {
@@ -1210,6 +1330,13 @@ private struct TripActivityRow: View {
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.red)
                 }
+                if trip.status == "confirmed" {
+                    Button("Cancel & full refund") {
+                        isRefundConfirmationPresented = true
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.red)
+                }
             }
         }
         .font(.system(size: 11))
@@ -1220,6 +1347,12 @@ private struct TripActivityRow: View {
             SafetyCenterSheet(tripURL: tripShareURL)
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
+        }
+        .alert("Cancel ride and request a full refund?", isPresented: $isRefundConfirmationPresented) {
+            Button("Keep ride", role: .cancel) {}
+            Button("Request refund", role: .destructive, action: onCancel)
+        } message: {
+            Text("The ride will be canceled and Tryps will request a full refund through Stripe. Refund timing depends on your bank.")
         }
     }
 }

@@ -1,8 +1,9 @@
 import express from "express";
+import { connect as connectHTTP2 } from "node:http2";
 import { rateLimit } from "express-rate-limit";
 import pg from "pg";
 import Stripe from "stripe";
-import { createRemoteJWKSet, jwtVerify, SignJWT } from "jose";
+import { createRemoteJWKSet, importPKCS8, jwtVerify, SignJWT } from "jose";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readConfig } from "./config.js";
 import { calculateRideFare, isValidLocation } from "./validation.js";
@@ -14,6 +15,75 @@ const stripe = new Stripe(config.stripeSecretKey);
 const appleKeys = createRemoteJWKSet(new URL("https://appleid.apple.com/auth/keys"));
 const sessionKey = new TextEncoder().encode(config.sessionSecret);
 const app = express();
+let cachedAPNSToken;
+let cachedAPNSTokenCreatedAt = 0;
+
+async function getAPNSToken() {
+  const now = Date.now();
+  if (cachedAPNSToken && now - cachedAPNSTokenCreatedAt < 50 * 60_000) return cachedAPNSToken;
+  const signingKey = await importPKCS8(config.apns.privateKey, "ES256");
+  cachedAPNSToken = await new SignJWT({})
+    .setProtectedHeader({ alg: "ES256", kid: config.apns.keyId })
+    .setIssuer(config.apns.teamId)
+    .setIssuedAt(now / 1000)
+    .sign(signingKey);
+  cachedAPNSTokenCreatedAt = now;
+  return cachedAPNSToken;
+}
+
+async function sendAPNSNotification(deviceToken, title, body, rideId) {
+  if (!config.apns) return;
+  const authorization = `bearer ${await getAPNSToken()}`;
+  const session = connectHTTP2(`https://${config.apns.host}`);
+  try {
+    await new Promise((resolve, reject) => {
+      session.once("connect", resolve);
+      session.once("error", reject);
+    });
+    const request = session.request({
+      ":method": "POST",
+      ":path": `/3/device/${deviceToken}`,
+      authorization,
+      "apns-topic": config.appleBundleId,
+      "apns-push-type": "alert",
+      "apns-priority": "10",
+      "content-type": "application/json",
+    });
+    const response = await new Promise((resolve, reject) => {
+      let status;
+      let responseBody = "";
+      request.on("response", (headers) => { status = headers[":status"]; });
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => { responseBody += chunk; });
+      request.on("end", () => resolve({ status, body: responseBody }));
+      request.on("error", reject);
+      request.setTimeout(10_000, () => request.destroy(new Error("APNs request timed out.")));
+      request.end(JSON.stringify({
+        aps: { alert: { title, body }, sound: "default" },
+        rideId,
+      }));
+    });
+    if (response.status === 410) {
+      await pool.query("DELETE FROM notification_devices WHERE device_token = $1", [deviceToken]);
+    } else if (response.status < 200 || response.status >= 300) {
+      throw new Error(`APNs returned ${response.status}: ${response.body}`);
+    }
+  } finally {
+    session.close();
+  }
+}
+
+async function notifyUser(userId, title, body, rideId) {
+  if (!config.apns) return;
+  try {
+    const result = await pool.query("SELECT device_token FROM notification_devices WHERE user_id = $1", [userId]);
+    await Promise.all(result.rows.map(({ device_token: deviceToken }) =>
+      sendAPNSNotification(deviceToken, title, body, rideId)
+        .catch((error) => console.error("Could not send APNs notification:", error))));
+  } catch (error) {
+    console.error("Could not look up APNs devices:", error);
+  }
+}
 
 app.disable("x-powered-by");
 
@@ -33,10 +103,19 @@ app.post("/v1/webhooks/stripe", express.raw({ type: "application/json", limit: "
     if (event.type === "payment_intent.succeeded") {
       const intent = event.data.object;
       if (intent.metadata?.rideId) {
-        await pool.query(
-          "UPDATE rides SET status = 'confirmed' WHERE id = $1 AND payment_intent_id = $2 AND status = 'awaiting_payment'",
+        const confirmed = await pool.query(
+          `UPDATE rides SET status = 'confirmed'
+           WHERE id = $1 AND payment_intent_id = $2 AND status = 'awaiting_payment'
+           RETURNING rider_user_id, driver_user_id`,
           [intent.metadata.rideId, intent.id],
         );
+        if (confirmed.rowCount) {
+          const { rider_user_id: riderId, driver_user_id: driverId } = confirmed.rows[0];
+          await Promise.all([
+            notifyUser(riderId, "Ride confirmed", "Your payment is complete and your ride is confirmed.", intent.metadata.rideId),
+            notifyUser(driverId, "Ride confirmed", "Payment is complete. Your assigned ride is confirmed.", intent.metadata.rideId),
+          ]);
+        }
       }
     } else if (event.type === "payment_intent.canceled") {
       const intent = event.data.object;
@@ -49,10 +128,33 @@ app.post("/v1/webhooks/stripe", express.raw({ type: "application/json", limit: "
           `UPDATE drivers SET available = true
            WHERE user_id = $1
              AND NOT EXISTS (
-               SELECT 1 FROM rides WHERE driver_user_id = $1 AND status IN ('awaiting_payment', 'confirmed')
+               SELECT 1 FROM rides WHERE driver_user_id = $1 AND status IN ('awaiting_payment', 'confirmed', 'refund_pending')
              )`,
           [result.rows[0].driver_user_id],
         );
+        await notifyUser(result.rows[0].driver_user_id, "Ride reservation released", "The rider's pending payment was canceled.", intent.metadata?.rideId);
+      }
+    } else if (event.type === "refund.updated" || event.type === "refund.failed") {
+      const refund = event.data.object;
+      const rideId = refund.metadata?.rideId;
+      if (rideId && refund.status === "succeeded") {
+        const finalized = await finalizeRideRefund(rideId, refund.id);
+        if (finalized) {
+          await Promise.all([
+            notifyUser(finalized.riderId, "Ride canceled", "Your full refund has been processed by Stripe.", rideId),
+            notifyUser(finalized.driverId, "Ride canceled", "The rider canceled this ride.", rideId),
+          ]);
+        }
+      } else if (rideId && refund.status === "failed") {
+        const failed = await pool.query(
+          `UPDATE rides SET status = 'confirmed', refund_id = NULL
+           WHERE id = $1 AND status = 'refund_pending' AND (refund_id IS NULL OR refund_id = $2)
+           RETURNING rider_user_id`,
+          [rideId, refund.id],
+        );
+        if (failed.rowCount) {
+          await notifyUser(failed.rows[0].rider_user_id, "Refund could not be completed", "Your ride remains confirmed. Contact support if you still need help.", rideId);
+        }
       }
     }
     return res.json({ received: true });
@@ -131,7 +233,41 @@ function requireRole(role) {
 
 app.get("/v1/health", (_req, res) => res.json({ status: "ok" }));
 
-app.post("/v1/fare-estimate", authenticate, requireRole("rider"), asyncRoute(async (req, res) => {
+app.put("/v1/notifications/device", authenticate, asyncRoute(async (req, res) => {
+  const token = req.body?.deviceToken;
+  if (typeof token !== "string" || !/^[a-fA-F0-9]{64}$/.test(token)) {
+    return res.status(400).json({ error: "A valid APNs device token is required." });
+  }
+  await pool.query(
+    `INSERT INTO notification_devices (user_id, device_token, updated_at)
+     VALUES ($1, $2, now())
+     ON CONFLICT (device_token) DO UPDATE SET user_id = EXCLUDED.user_id, updated_at = now()`,
+    [req.user.id, token.toLowerCase()],
+  );
+  await pool.query(
+    `DELETE FROM notification_devices
+     WHERE user_id = $1 AND device_token NOT IN (
+       SELECT device_token FROM notification_devices
+       WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 10
+     )`,
+    [req.user.id],
+  );
+  return res.json({ registered: true });
+}));
+
+app.delete("/v1/notifications/device", authenticate, asyncRoute(async (req, res) => {
+  const token = req.body?.deviceToken;
+  if (typeof token !== "string" || !/^[a-fA-F0-9]{64}$/.test(token)) {
+    return res.status(400).json({ error: "A valid APNs device token is required." });
+  }
+  await pool.query(
+    "DELETE FROM notification_devices WHERE user_id = $1 AND device_token = $2",
+    [req.user.id, token.toLowerCase()],
+  );
+  return res.json({ unregistered: true });
+}));
+
+app.post("/v1/fare-estimate", asyncRoute(async (req, res) => {
   const { pickup, destination, rideType } = req.body ?? {};
   if (!validateLocationPair(req.body)) {
     return res.status(400).json({ error: "Valid pickup and destination are required." });
@@ -331,7 +467,7 @@ app.patch("/v1/driver/availability", authenticate, requireRole("driver"), asyncR
     `UPDATE drivers SET available = $2, updated_at = now()
      WHERE user_id = $1
        AND ($2 = false OR NOT EXISTS (
-         SELECT 1 FROM rides WHERE driver_user_id = $1 AND status IN ('awaiting_payment', 'confirmed')
+         SELECT 1 FROM rides WHERE driver_user_id = $1 AND status IN ('awaiting_payment', 'confirmed', 'refund_pending')
        ))`,
     [req.user.id, req.body.available],
   );
@@ -357,7 +493,7 @@ app.post("/v1/driver/rides/:rideId/complete", authenticate, requireRole("driver"
   const result = await pool.query(
     `UPDATE rides SET status = 'completed', completed_at = now()
      WHERE id = $1 AND driver_user_id = $2 AND status = 'confirmed'
-     RETURNING id`,
+     RETURNING id, rider_user_id`,
     [req.params.rideId, req.user.id],
   );
   if (!result.rowCount) return res.status(404).json({ error: "Active ride not found." });
@@ -365,6 +501,7 @@ app.post("/v1/driver/rides/:rideId/complete", authenticate, requireRole("driver"
     "UPDATE drivers SET available = true, updated_at = now() WHERE user_id = $1",
     [req.user.id],
   );
+  await notifyUser(result.rows[0].rider_user_id, "Ride completed", "Your driver marked the ride complete.", result.rows[0].id);
   return res.json({ completed: true });
 }));
 
@@ -540,12 +677,137 @@ app.delete("/v1/rides/:rideId", authenticate, requireRole("rider"), asyncRoute(a
       `UPDATE drivers SET available = true
        WHERE user_id = $1
          AND NOT EXISTS (
-           SELECT 1 FROM rides WHERE driver_user_id = $1 AND status IN ('awaiting_payment', 'confirmed')
+           SELECT 1 FROM rides WHERE driver_user_id = $1 AND status IN ('awaiting_payment', 'confirmed', 'refund_pending')
          )`,
       [cancelled.rows[0].driver_user_id],
     );
   }
   return res.json({ cancelled: cancelled.rowCount > 0 });
+}));
+
+async function finalizeRideRefund(rideId, refundId) {
+  const client = await pool.connect();
+  let transactionOpen = false;
+  try {
+    await client.query("BEGIN");
+    transactionOpen = true;
+    const result = await client.query(
+      `UPDATE rides
+       SET status = 'cancelled', refunded_at = COALESCE(refunded_at, now()), refund_id = $2
+       WHERE id = $1 AND status = 'refund_pending' AND (refund_id IS NULL OR refund_id = $2)
+       RETURNING rider_user_id, driver_user_id`,
+      [rideId, refundId],
+    );
+    if (!result.rowCount) {
+      await client.query("ROLLBACK");
+      transactionOpen = false;
+      return null;
+    }
+    const { rider_user_id: riderId, driver_user_id: driverId } = result.rows[0];
+    await client.query(
+      `UPDATE drivers SET available = true, updated_at = now()
+       WHERE user_id = $1
+         AND NOT EXISTS (
+           SELECT 1 FROM rides
+           WHERE driver_user_id = $1 AND status IN ('awaiting_payment', 'confirmed', 'refund_pending')
+         )`,
+      [driverId],
+    );
+    await client.query("COMMIT");
+    transactionOpen = false;
+    return { riderId, driverId };
+  } catch (error) {
+    if (transactionOpen) await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+app.post("/v1/rides/:rideId/refund", authenticate, requireRole("rider"), asyncRoute(async (req, res) => {
+  const client = await pool.connect();
+  let transactionOpen = false;
+  let ride;
+  try {
+    await client.query("BEGIN");
+    transactionOpen = true;
+    const result = await client.query(
+      `SELECT payment_intent_id, status, driver_user_id, refund_id
+       FROM rides WHERE id = $1 AND rider_user_id = $2 FOR UPDATE`,
+      [req.params.rideId, req.user.id],
+    );
+    if (!result.rowCount) {
+      await client.query("ROLLBACK");
+      transactionOpen = false;
+      return res.status(404).json({ error: "Ride not found." });
+    }
+    ride = result.rows[0];
+    if (ride.status === "cancelled" && ride.refund_id) {
+      await client.query("ROLLBACK");
+      transactionOpen = false;
+      return res.json({ cancelled: true, refunded: true, refundId: ride.refund_id });
+    }
+    if (ride.status === "confirmed") {
+      await client.query(
+        "UPDATE rides SET status = 'refund_pending' WHERE id = $1 AND status = 'confirmed'",
+        [req.params.rideId],
+      );
+    } else if (ride.status !== "refund_pending") {
+      await client.query("ROLLBACK");
+      transactionOpen = false;
+      return res.status(409).json({ error: "Only confirmed, uncompleted rides can be canceled for a full refund." });
+    }
+    await client.query("COMMIT");
+    transactionOpen = false;
+
+    const refund = await stripe.refunds.create(
+      {
+        payment_intent: ride.payment_intent_id,
+        reason: "requested_by_customer",
+        reverse_transfer: true,
+        refund_application_fee: true,
+        metadata: { rideId: req.params.rideId },
+      },
+      { idempotencyKey: `ride-refund-${req.params.rideId}` },
+    );
+    await pool.query(
+      `UPDATE rides SET refund_id = $2
+       WHERE id = $1 AND status = 'refund_pending' AND refund_id IS NULL`,
+      [req.params.rideId, refund.id],
+    );
+    if (refund.status !== "succeeded") {
+      return res.status(202).json({ cancelled: false, refundPending: true, refundId: refund.id });
+    }
+
+    const finalized = await finalizeRideRefund(req.params.rideId, refund.id);
+    if (finalized) {
+      await Promise.all([
+        notifyUser(finalized.riderId, "Ride canceled", "Your full refund has been processed by Stripe.", req.params.rideId),
+        notifyUser(finalized.driverId, "Ride canceled", "The rider canceled this ride.", req.params.rideId),
+      ]);
+    }
+    return res.json({ cancelled: true, refunded: true, refundId: refund.id });
+  } catch (error) {
+    if (transactionOpen) await client.query("ROLLBACK").catch(() => {});
+    if (error.type === "StripeInvalidRequestError") {
+      await pool.query(
+        "UPDATE rides SET status = 'confirmed' WHERE id = $1 AND status = 'refund_pending'",
+        [req.params.rideId],
+      ).catch(() => {});
+      return res.status(409).json({ error: "Stripe could not refund this payment. Contact support for assistance." });
+    }
+    if (!transactionOpen && error.type !== "StripeAPIError" && error.type !== "StripeConnectionError" &&
+        error.type !== "StripeRateLimitError" && error.type !== "StripeAuthenticationError" &&
+        error.type !== "StripePermissionError" && error.type !== "StripeIdempotencyError") {
+      throw error;
+    }
+    if (!transactionOpen) {
+      return res.status(202).json({ cancelled: false, refundPending: true });
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
 }));
 
 app.get("/v1/rides/:rideId", authenticate, requireRole("rider"), asyncRoute(async (req, res) => {
@@ -661,11 +923,12 @@ async function dispatchScheduledRides() {
   const client = await pool.connect();
   let transactionOpen = false;
   let driverId;
+  const matchedRides = [];
   try {
     await client.query("BEGIN");
     transactionOpen = true;
     const scheduled = await client.query(
-      `SELECT id, ST_X(pickup::geometry) AS longitude, ST_Y(pickup::geometry) AS latitude,
+      `SELECT id, rider_user_id, ST_X(pickup::geometry) AS longitude, ST_Y(pickup::geometry) AS latitude,
               ride_type, amount_cents, currency
        FROM rides
        WHERE status = 'scheduled'
@@ -690,7 +953,7 @@ async function dispatchScheduledRides() {
            AND location_updated_at > now() - ($4::double precision * interval '1 second')
            AND NOT EXISTS (
              SELECT 1 FROM rides r
-             WHERE r.driver_user_id = d.user_id AND r.status IN ('awaiting_payment', 'confirmed')
+             WHERE r.driver_user_id = d.user_id AND r.status IN ('awaiting_payment', 'confirmed', 'refund_pending')
            )
            AND ST_DWithin(
              location,
@@ -736,10 +999,13 @@ async function dispatchScheduledRides() {
         [ride.id, driverId, paymentIntent.id],
       );
       await client.query("UPDATE drivers SET available = false, updated_at = now() WHERE user_id = $1", [driverId]);
+      matchedRides.push({ rideId: ride.id, riderId: ride.rider_user_id });
       driverId = undefined;
     }
     await client.query("COMMIT");
     transactionOpen = false;
+    await Promise.all(matchedRides.map(({ rideId, riderId }) =>
+      notifyUser(riderId, "Driver matched", "A driver is ready. Open Tryps Activity to complete payment.", rideId)));
   } catch (error) {
     if (transactionOpen) await client.query("ROLLBACK").catch(() => {});
     if (driverId) {
@@ -747,7 +1013,7 @@ async function dispatchScheduledRides() {
         `UPDATE drivers SET available = true
          WHERE user_id = $1
            AND NOT EXISTS (
-             SELECT 1 FROM rides WHERE driver_user_id = $1 AND status IN ('awaiting_payment', 'confirmed')
+             SELECT 1 FROM rides WHERE driver_user_id = $1 AND status IN ('awaiting_payment', 'confirmed', 'refund_pending')
            )`,
         [driverId],
       ).catch(() => {});
@@ -802,7 +1068,7 @@ async function expireUnpaidRideReservations() {
           `UPDATE drivers SET available = true
            WHERE user_id = $1
              AND NOT EXISTS (
-               SELECT 1 FROM rides WHERE driver_user_id = $1 AND status IN ('awaiting_payment', 'confirmed')
+               SELECT 1 FROM rides WHERE driver_user_id = $1 AND status IN ('awaiting_payment', 'confirmed', 'refund_pending')
              )`,
           [ride.driver_user_id],
         );

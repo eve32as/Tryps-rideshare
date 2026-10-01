@@ -100,6 +100,7 @@ test("calculates server-side estimated fares and rejects unsupported ride types 
   );
   assert.equal(calculateRideFare(pickup, destination, "unknown", pricing), undefined);
   assert.equal(calculateRideFare(pickup, { latitude: 0, longitude: 0 }, "tryps-go", pricing), undefined);
+  assert.equal(calculateRideFare(pickup, destination, "toString", pricing), undefined);
 });
 
 test("validates fare configuration and optional APNs settings", () => {
