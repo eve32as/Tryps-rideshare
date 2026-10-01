@@ -17,6 +17,7 @@ interface AccountRepository {
 }
 
 interface RideRepository {
+    suspend fun searchPlaces(query: String, near: GeoPoint?): List<Place>
     fun observeActiveRide(userId: String, role: UserRole): Flow<Ride?>
     fun observeHistory(userId: String, role: UserRole): Flow<List<Ride>>
     fun observeOpenRides(): Flow<List<Ride>>
