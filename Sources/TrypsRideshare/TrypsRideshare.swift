@@ -1,9 +1,19 @@
-// The Swift Programming Language
-// https://docs.swift.org/swift-book
+#if canImport(SwiftUI)
+import SwiftUI
 
 @main
-struct TrypsRideshare {
-    static func main() {
-        print("Hello, world!")
+struct TrypsRideshareApp: App {
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+        }
     }
 }
+#else
+@main
+struct TrypsRideshareApp {
+    static func main() {
+        print("Tryps Rideshare is a SwiftUI app. Open this package on an Apple platform to run the app.")
+    }
+}
+#endif
