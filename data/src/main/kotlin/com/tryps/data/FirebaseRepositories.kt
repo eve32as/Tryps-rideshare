@@ -8,9 +8,9 @@ import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.functions.FirebaseFunctions
 import com.tryps.domain.AccountRepository
 import com.tryps.domain.RideRepository
+import com.tryps.model.DriverMatchingMetrics
 import com.tryps.model.GeoPoint
 import com.tryps.model.Place
-import com.tryps.model.DriverMatchingMetrics
 import com.tryps.model.Ride
 import com.tryps.model.RideQuote
 import com.tryps.model.RideStatus
@@ -94,6 +94,12 @@ class FirebaseRideRepository(
         awaitClose { listener.remove() }
     }
 
+    private data class DriverDispatchState(
+        val available: Boolean,
+        val locationUpdateBucket: Long,
+        val matchingMetrics: Map<*, *>,
+    )
+
     override suspend fun searchPlaces(query: String, near: GeoPoint?): List<Place> {
         if (query.length < 2) return emptyList()
         val payload = mutableMapOf<String, Any>("query" to query)
@@ -141,7 +147,7 @@ class FirebaseRideRepository(
                             it.vehicleCategory == vehicleCategory)
                 }
                     .sortedBy(Ride::createdAtEpochMillis)
-                if (openRides.isEmpty() || !dispatchState.first) return@mapLatest openRides
+                if (openRides.isEmpty() || !dispatchState.available) return@mapLatest openRides
 
                 val recommendations = try {
                     val result = functions.getHttpsCallable("getRideRecommendations")
@@ -154,32 +160,55 @@ class FirebaseRideRepository(
                 } catch (_: Exception) {
                     emptyList()
                 }
-                val etaByRide = recommendations.mapNotNull { value ->
+                val scoreByRide = recommendations.mapNotNull { value ->
                     val recommendation = value as? Map<*, *> ?: return@mapNotNull null
                     val rideId = recommendation["rideId"] as? String ?: return@mapNotNull null
                     val eta = (recommendation["pickupEtaSeconds"] as? Number)?.toInt() ?: return@mapNotNull null
-                    rideId to eta
+                    val score = (recommendation["matchingScoreSeconds"] as? Number)?.toInt() ?: eta
+                    rideId to (eta to score)
                 }.toMap()
 
                 openRides.withIndex()
-                    .sortedWith(compareBy<IndexedValue<Ride>> { etaByRide[it.value.id] ?: Int.MAX_VALUE }.thenBy { it.index })
+                    .sortedWith(compareBy<IndexedValue<Ride>> { scoreByRide[it.value.id]?.second ?: Int.MAX_VALUE }.thenBy { it.index })
                     .map { indexedRide ->
-                        indexedRide.value.copy(pickupEtaSeconds = etaByRide[indexedRide.value.id])
+                        val recommendation = scoreByRide[indexedRide.value.id]
+                        indexedRide.value.copy(
+                            pickupEtaSeconds = recommendation?.first,
+                            matchingScoreSeconds = recommendation?.second,
+                        )
                     }
             }
 
-    private fun observeDriverDispatchState(driverId: String): Flow<Pair<Boolean, Long>> = callbackFlow {
-        val reference = firestore.collection("drivers").document(driverId)
-        val listener = reference.addSnapshotListener { snapshot, error ->
-            if (error != null) {
-                close(error)
-            } else {
-                val available = snapshot?.getBoolean("available") == true
-                val locationUpdateBucket = (snapshot?.getTimestamp("updatedAt")?.seconds ?: 0L) / 30
-                trySend(available to locationUpdateBucket)
-            }
+    private fun observeDriverDispatchState(driverId: String): Flow<DriverDispatchState> = callbackFlow {
+        var available = false
+        var locationUpdateBucket = 0L
+        var matchingMetrics: Map<*, *> = emptyMap<Any, Any>()
+        fun emitState() {
+            trySend(DriverDispatchState(available, locationUpdateBucket, matchingMetrics))
         }
-        awaitClose { listener.remove() }
+        val driverListener = firestore.collection("drivers").document(driverId)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    close(error)
+                } else {
+                    available = snapshot?.getBoolean("available") == true
+                    locationUpdateBucket = (snapshot?.getTimestamp("updatedAt")?.seconds ?: 0L) / 30
+                    emitState()
+                }
+            }
+        val profileListener = firestore.collection("users").document(driverId)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    close(error)
+                } else {
+                    matchingMetrics = snapshot?.get("matchingMetrics") as? Map<*, *> ?: emptyMap()
+                    emitState()
+                }
+            }
+        awaitClose {
+            driverListener.remove()
+            profileListener.remove()
+        }
     }
 
     override suspend fun quote(pickup: Place, destination: Place): RideQuote {
@@ -291,7 +320,9 @@ private fun DocumentSnapshot.toRide(): Ride? = runCatching {
         createdAtEpochMillis = getLong("createdAtEpochMillis") ?: 0,
         rating = getLong("rating")?.toInt(),
         pickupEtaSeconds = getLong("pickupEtaSeconds")?.toInt(),
-        vehicleCategory = enumValueOrDefault(getString("vehicleCategory"), VehicleCategory.ANY),
+        vehicleCategory = getString("vehicleCategory")?.let {
+            enumValueOrDefault(it, VehicleCategory.STANDARD)
+        } ?: VehicleCategory.ANY,
     )
 }.getOrNull()
 

@@ -8,6 +8,7 @@ const { FieldValue, getFirestore } = require("firebase-admin/firestore");
 const {
   applyMatchingMetricEvent,
   filterCompatibleRides,
+  isValidDriverCategory,
   rankRideRecommendations,
 } = require("./matching");
 
@@ -98,15 +99,8 @@ exports.getRideRecommendations = onCall({ secrets: [googleMapsApiKey] }, async (
     db.collection("users").doc(driverId).get(),
     db.collection("drivers").doc(driverId).get(),
   ]);
-  if (profile.get("role") !== "DRIVER") throw new HttpsError("permission-denied", "Only drivers can request ride recommendations");
+  assertAvailableDriver(profile, driver);
   const driverCategory = profile.get("vehicleCategory") || "STANDARD";
-  if (!driver.exists || driver.get("available") !== true) {
-    throw new HttpsError("failed-precondition", "Go online to receive ride recommendations");
-  }
-  const locationUpdatedAt = driver.get("updatedAt");
-  if (!locationUpdatedAt || Date.now() - locationUpdatedAt.toMillis() > 120_000) {
-    throw new HttpsError("failed-precondition", "Update your location to receive ride recommendations");
-  }
 
   const origin = parsePoint(driver.get("location"));
   const openRides = await db.collection("rides")
@@ -118,7 +112,7 @@ exports.getRideRecommendations = onCall({ secrets: [googleMapsApiKey] }, async (
       return {
         id: ride.id,
         pickup: parsePoint(ride.get("pickup")?.location),
-        vehicleCategory: ride.get("vehicleCategory") || "ANY",
+        vehicleCategory: ride.get("vehicleCategory") ?? "ANY",
       };
     } catch {
       return null;
@@ -241,10 +235,16 @@ exports.trackDriverMatchingMetrics = onDocumentUpdated("rides/{rideId}", async (
   }
   if (before.status !== "IN_PROGRESS" && after.status === "IN_PROGRESS" &&
       Number.isFinite(after.pickupEtaSeconds) && after.acceptedAt?.toMillis) {
-    const elapsedSeconds = Math.max(0, (Date.now() - after.acceptedAt.toMillis()) / 1000);
+    const eventTimeMillis = Date.parse(event.time);
+    const elapsedSeconds = Math.max(
+      0,
+      ((Number.isFinite(eventTimeMillis) ? eventTimeMillis : Date.now()) - after.acceptedAt.toMillis()) / 1000,
+    );
     metricEvents.push({
       type: "etaError",
       errorSeconds: Math.abs(elapsedSeconds - after.pickupEtaSeconds),
+      actualPickupElapsedSeconds: elapsedSeconds,
+      predictedPickupEtaSeconds: after.pickupEtaSeconds,
     });
   }
   if (metricEvents.length === 0) return;
@@ -266,6 +266,11 @@ exports.trackDriverMatchingMetrics = onDocumentUpdated("rides/{rideId}", async (
         rideId: event.params.rideId,
         driverId,
         type: metricEvent.type,
+        ...(metricEvent.type === "etaError" ? {
+          actualPickupElapsedSeconds: metricEvent.actualPickupElapsedSeconds,
+          predictedPickupEtaSeconds: metricEvent.predictedPickupEtaSeconds,
+          errorSeconds: metricEvent.errorSeconds,
+        } : {}),
         createdAt: FieldValue.serverTimestamp(),
       });
     });
@@ -275,6 +280,9 @@ exports.trackDriverMatchingMetrics = onDocumentUpdated("rides/{rideId}", async (
 function assertAvailableDriver(profile, driver) {
   if (!profile.exists || profile.get("role") !== "DRIVER") {
     throw new HttpsError("permission-denied", "Only drivers can accept rides");
+  }
+  if (!isValidDriverCategory(profile.get("vehicleCategory") || "STANDARD")) {
+    throw new HttpsError("failed-precondition", "Set a supported driver vehicle category");
   }
   if (!driver.exists || driver.get("available") !== true) {
     throw new HttpsError("failed-precondition", "Go online to accept rides");
@@ -301,7 +309,8 @@ async function getTrafficAwareEta(origin, destination) {
     }),
   });
   if (!response.ok) throw new HttpsError("unavailable", "A pickup route could not be calculated");
-  const route = (await response.json())[0];
+  const matrix = await response.json();
+  const route = Array.isArray(matrix) ? matrix[0] : null;
   const eta = Number.parseInt(route?.duration, 10);
   if (route?.condition !== "ROUTE_EXISTS" || route.status?.code > 0 || !Number.isFinite(eta) || eta < 0) {
     throw new HttpsError("not-found", "No driving route to this pickup was found");

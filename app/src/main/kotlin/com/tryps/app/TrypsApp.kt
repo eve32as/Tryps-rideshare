@@ -284,6 +284,12 @@ private fun DriverScreen(state: MainUiState, viewModel: MainViewModel) {
         }
         Spacer(Modifier.height(16.dp))
         Text("Nearby requests", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        state.user?.matchingMetrics?.let { metrics ->
+            Text("${metrics.completedRideCount} completed · ${metrics.cancellationCount} driver cancellations")
+            if (metrics.etaSampleCount > 0) {
+                Text("Average pickup ETA error: ${metrics.averageEtaErrorSeconds.toInt()} sec (${metrics.etaSampleCount} trips)")
+            }
+        }
         if (!state.isAvailable) Text("Go online to receive requests", modifier = Modifier.padding(top = 16.dp))
         else if (state.openRides.isEmpty()) Text("Searching for riders…", modifier = Modifier.padding(top = 16.dp))
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {

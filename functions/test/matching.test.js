@@ -6,6 +6,7 @@ const {
   applyMatchingMetricEvent,
   calculateReliabilityPenalty,
   filterCompatibleRides,
+  isValidDriverCategory,
   rankRideRecommendations,
 } = require("../matching");
 
@@ -58,6 +59,20 @@ test("treats legacy ride and driver profiles as broadly compatible", () => {
   const candidates = [{ id: "legacy" }, { id: "luxury", vehicleCategory: "LUXURY" }];
   assert.deepEqual(filterCompatibleRides(candidates, undefined).map(({ id }) => id), ["legacy"]);
   assert.deepEqual(filterCompatibleRides(candidates, "ANY").map(({ id }) => id), ["legacy", "luxury"]);
+});
+
+test("does not treat unknown vehicle categories as unrestricted", () => {
+  const candidates = [
+    { id: "invalid", vehicleCategory: "AIRCRAFT" },
+    { id: "standard", vehicleCategory: "STANDARD" },
+  ];
+  assert.deepEqual(filterCompatibleRides(candidates, "AIRCRAFT").map(({ id }) => id), ["standard"]);
+});
+
+test("requires drivers to register a supported non-optional vehicle category", () => {
+  assert.equal(isValidDriverCategory("ACCESSIBLE"), true);
+  assert.equal(isValidDriverCategory("ANY"), false);
+  assert.equal(isValidDriverCategory("AIRCRAFT"), false);
 });
 
 test("updates cancellation, completion, and average ETA error history", () => {

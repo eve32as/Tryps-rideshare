@@ -60,4 +60,5 @@ data class Ride(
     val rating: Int? = null,
     val pickupEtaSeconds: Int? = null,
     val vehicleCategory: VehicleCategory = VehicleCategory.ANY,
+    val matchingScoreSeconds: Int? = null,
 )

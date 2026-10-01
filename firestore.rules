@@ -13,6 +13,12 @@ service cloud.firestore {
       return role == "RIDER" || role == "DRIVER";
     }
 
+    function validVehicleCategory(category, role) {
+      return role == "DRIVER"
+        ? category in ["STANDARD", "XL", "ACCESSIBLE", "LUXURY"]
+        : category in ["ANY", "STANDARD", "XL", "ACCESSIBLE", "LUXURY"];
+    }
+
     function hasRole(role) {
       return signedIn()
         && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == role;
@@ -22,10 +28,14 @@ service cloud.firestore {
       allow read, delete: if isOwner(userId);
       allow update: if isOwner(userId)
         && request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(["displayName", "phone", "vehicle", "vehicleCategory"]);
+          .hasOnly(["displayName", "phone", "vehicle", "vehicleCategory"])
+        && (!("vehicleCategory" in request.resource.data)
+          || validVehicleCategory(request.resource.data.vehicleCategory, resource.data.role));
       allow create: if isOwner(userId)
         && validRole(request.resource.data.role)
         && request.resource.data.email == request.auth.token.email
+        && (!("vehicleCategory" in request.resource.data)
+          || validVehicleCategory(request.resource.data.vehicleCategory, request.resource.data.role))
         && request.resource.data.keys().hasOnly([
           "displayName", "email", "role", "rating", "vehicleCategory", "createdAt"
         ]);

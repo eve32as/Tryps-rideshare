@@ -3,6 +3,7 @@
 function rankRideRecommendations(candidates, matrix, metrics = {}) {
   const etaByDestination = new Map();
   for (const route of matrix) {
+    if (!route || typeof route !== "object") continue;
     if (route.condition !== "ROUTE_EXISTS" || route.status?.code > 0) continue;
     const eta = Number.parseInt(route.duration, 10);
     if (!Number.isInteger(route.destinationIndex) || !Number.isFinite(eta) || eta < 0) continue;
@@ -28,11 +29,16 @@ function rankRideRecommendations(candidates, matrix, metrics = {}) {
 }
 
 function filterCompatibleRides(candidates, driverCategory) {
-  const category = normalizeCategory(driverCategory, "STANDARD");
+  const category = normalizeCategory(driverCategory) ?? "STANDARD";
   return candidates.filter(({ vehicleCategory }) => {
-    const requestedCategory = normalizeCategory(vehicleCategory, "ANY");
+    const requestedCategory = vehicleCategory == null ? "ANY" : normalizeCategory(vehicleCategory);
+    if (!requestedCategory) return false;
     return requestedCategory === "ANY" || category === "ANY" || requestedCategory === category;
   });
+}
+
+function isValidDriverCategory(category) {
+  return ["STANDARD", "XL", "ACCESSIBLE", "LUXURY"].includes(category);
 }
 
 function calculateReliabilityPenalty(metrics = {}) {
@@ -73,14 +79,15 @@ function finiteNonNegative(value) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
-function normalizeCategory(value, fallback) {
+function normalizeCategory(value) {
   const categories = new Set(["ANY", "STANDARD", "XL", "ACCESSIBLE", "LUXURY"]);
-  return typeof value === "string" && categories.has(value) ? value : fallback;
+  return typeof value === "string" && categories.has(value) ? value : null;
 }
 
 module.exports = {
   applyMatchingMetricEvent,
   calculateReliabilityPenalty,
   filterCompatibleRides,
+  isValidDriverCategory,
   rankRideRecommendations,
 };
