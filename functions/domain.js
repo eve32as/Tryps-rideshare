@@ -85,6 +85,18 @@ function normalizeRidePreferences(value) {
   };
 }
 
+function normalizeDriverRidePreferences(acceptsWomenAndMinorsRides, ecoFriendlyVehicle) {
+  if ((acceptsWomenAndMinorsRides !== undefined &&
+      typeof acceptsWomenAndMinorsRides !== "boolean") ||
+      (ecoFriendlyVehicle !== undefined && typeof ecoFriendlyVehicle !== "boolean")) {
+    throw new TypeError("Driver ride preferences are invalid.");
+  }
+  return {
+    acceptsWomenAndMinorsRides: acceptsWomenAndMinorsRides === true,
+    ecoFriendlyVehicle: ecoFriendlyVehicle === true,
+  };
+}
+
 function isFreshDriverLocation(updatedAtMillis, nowMillis, maxAgeMillis = DRIVER_LOCATION_MAX_AGE_MS) {
   return Number.isFinite(updatedAtMillis) &&
     updatedAtMillis <= nowMillis + DRIVER_LOCATION_FUTURE_TOLERANCE_MS &&
@@ -125,6 +137,7 @@ module.exports = {
   canTransitionRide,
   distanceInKilometers,
   isFreshDriverLocation,
+  normalizeDriverRidePreferences,
   normalizeRidePreferences,
   rankNearbyDrivers,
   validCoordinate,

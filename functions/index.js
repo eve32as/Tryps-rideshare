@@ -16,6 +16,7 @@ const {
   calculateQuote,
   canTransitionRide,
   isFreshDriverLocation,
+  normalizeDriverRidePreferences,
   normalizeRidePreferences,
   rankNearbyDrivers,
   validCoordinate,
@@ -450,14 +451,19 @@ exports.applyToDrive = onCall({ region: REGION }, async (request) => {
   const displayName = typeof request.data?.displayName === "string" ? request.data.displayName.trim() : "";
   const vehicleDescription = typeof request.data?.vehicleDescription === "string" ? request.data.vehicleDescription.trim() : "";
   const licensePlate = typeof request.data?.licensePlate === "string" ? request.data.licensePlate.trim() : "";
-  const acceptsWomenAndMinorsRides = request.data?.acceptsWomenAndMinorsRides;
-  const ecoFriendlyVehicle = request.data?.ecoFriendlyVehicle;
+  let driverPreferences;
+  try {
+    driverPreferences = normalizeDriverRidePreferences(
+      request.data?.acceptsWomenAndMinorsRides,
+      request.data?.ecoFriendlyVehicle
+    );
+  } catch {
+    throw new HttpsError("invalid-argument", "Enter valid driver preferences.");
+  }
   if (
     typeof displayName !== "string" || displayName.length < 2 || displayName.length > 80 ||
     typeof vehicleDescription !== "string" || vehicleDescription.length < 2 || vehicleDescription.length > 100 ||
-    typeof licensePlate !== "string" || licensePlate.length < 2 || licensePlate.length > 16 ||
-    typeof acceptsWomenAndMinorsRides !== "boolean" ||
-    typeof ecoFriendlyVehicle !== "boolean"
+    typeof licensePlate !== "string" || licensePlate.length < 2 || licensePlate.length > 16
   ) {
     throw new HttpsError("invalid-argument", "Enter your name, vehicle, and license plate.");
   }
@@ -468,8 +474,7 @@ exports.applyToDrive = onCall({ region: REGION }, async (request) => {
     displayName,
     vehicleDescription,
     licensePlate: licensePlate.toUpperCase(),
-    acceptsWomenAndMinorsRides,
-    ecoFriendlyVehicle,
+    ...driverPreferences,
     status: "pending_review",
     updatedAt: FieldValue.serverTimestamp(),
     createdAt: FieldValue.serverTimestamp(),
@@ -539,6 +544,27 @@ exports.setDriverAvailability = onCall({ region: REGION }, async (request) => {
     updatedAt: FieldValue.serverTimestamp(),
   });
   return { available };
+});
+
+exports.setDriverRidePreferences = onCall({ region: REGION }, async (request) => {
+  const uid = requireDriver(request);
+  const acceptsWomenAndMinorsRides = request.data?.acceptsWomenAndMinorsRides;
+  const ecoFriendlyVehicle = request.data?.ecoFriendlyVehicle;
+  if (typeof acceptsWomenAndMinorsRides !== "boolean" ||
+      typeof ecoFriendlyVehicle !== "boolean") {
+    throw new HttpsError("invalid-argument", "Choose valid driver preferences.");
+  }
+  const driverRef = db.collection("drivers").doc(uid);
+  const snapshot = await driverRef.get();
+  if (!snapshot.exists || snapshot.data().verified !== true) {
+    throw new HttpsError("permission-denied", "Your driver profile is not approved.");
+  }
+  await driverRef.update({
+    acceptsWomenAndMinorsRides,
+    ecoFriendlyVehicle,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  return { acceptsWomenAndMinorsRides, ecoFriendlyVehicle };
 });
 
 exports.updateDriverLocation = onCall({ region: REGION }, async (request) => {

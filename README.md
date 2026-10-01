@@ -43,7 +43,7 @@ Deploying the scheduled ride retry function requires a Firebase project on the B
 
 ### Driver administration
 
-Driver applications are stored for review and do not grant driver access until approved. The `approveDriverApplication` callable requires an account with the `admin` custom claim. Bootstrap the first administrator using Application Default Credentials (do not download or commit a service-account key):
+Driver applications are stored for review and do not grant driver access until approved. Applicants may opt in to women/minors requests and identify an electric or hybrid vehicle; verify these claims during manual review. Approved drivers can later change either preference in the driver dashboard. The `approveDriverApplication` callable requires an account with the `admin` custom claim. Bootstrap the first administrator using Application Default Credentials (do not download or commit a service-account key):
 
 ```sh
 gcloud auth application-default login

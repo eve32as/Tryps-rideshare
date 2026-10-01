@@ -21,6 +21,9 @@ private final class FirebaseDriverStore: ObservableObject {
     @Published private(set) var activeRidePickup: CLLocationCoordinate2D?
     @Published private(set) var activeRideDropOff: CLLocationCoordinate2D?
     @Published private(set) var isAvailable = false
+    @Published private(set) var acceptsWomenAndMinorsRides = false
+    @Published private(set) var ecoFriendlyVehicle = false
+    @Published private(set) var preferencesLoaded = false
     @Published private(set) var isWorking = false
     @Published var errorMessage: String?
 
@@ -50,8 +53,16 @@ private final class FirebaseDriverStore: ObservableObject {
         guard isDriver else { return }
         driverListener = Firestore.firestore().collection("drivers").document(userID)
             .addSnapshotListener { [weak self] snapshot, _ in
-                let available = snapshot?.data()?["available"] as? Bool ?? false
-                Task { @MainActor in self?.isAvailable = available }
+                let data = snapshot?.data()
+                let available = data?["available"] as? Bool ?? false
+                let acceptsWomenAndMinorsRides = data?["acceptsWomenAndMinorsRides"] as? Bool ?? false
+                let ecoFriendlyVehicle = data?["ecoFriendlyVehicle"] as? Bool ?? false
+                Task { @MainActor in
+                    self?.isAvailable = available
+                    self?.acceptsWomenAndMinorsRides = acceptsWomenAndMinorsRides
+                    self?.ecoFriendlyVehicle = ecoFriendlyVehicle
+                    self?.preferencesLoaded = snapshot?.exists == true
+                }
             }
         assignedRidesListener = Firestore.firestore().collection("rides")
             .whereField("driverUid", isEqualTo: userID)
@@ -133,6 +144,9 @@ private final class FirebaseDriverStore: ObservableObject {
         activeRidePickup = nil
         activeRideDropOff = nil
         isAvailable = false
+        acceptsWomenAndMinorsRides = false
+        ecoFriendlyVehicle = false
+        preferencesLoaded = false
     }
 
     func submitApplication(
@@ -176,6 +190,22 @@ private final class FirebaseDriverStore: ObservableObject {
             isAvailable = available
         } catch {
             errorMessage = "Couldn’t update driver availability."
+        }
+    }
+
+    func setRidePreferences(acceptsWomenAndMinorsRides: Bool, ecoFriendlyVehicle: Bool) async {
+        isWorking = true
+        errorMessage = nil
+        defer { isWorking = false }
+        do {
+            _ = try await call("setDriverRidePreferences", data: [
+                "acceptsWomenAndMinorsRides": acceptsWomenAndMinorsRides,
+                "ecoFriendlyVehicle": ecoFriendlyVehicle,
+            ])
+            self.acceptsWomenAndMinorsRides = acceptsWomenAndMinorsRides
+            self.ecoFriendlyVehicle = ecoFriendlyVehicle
+        } catch {
+            errorMessage = "Couldn’t update your ride preferences."
         }
     }
 
@@ -434,6 +464,39 @@ struct FirebaseDriverView: View {
                 .tint(driver.isAvailable ? TrypsStyle.muted : TrypsStyle.green)
                 .disabled(driver.isWorking)
             }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("RIDE PREFERENCES")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(TrypsStyle.muted)
+                Toggle(isOn: Binding(
+                    get: { driver.acceptsWomenAndMinorsRides },
+                    set: { value in
+                        Task {
+                            await driver.setRidePreferences(
+                                acceptsWomenAndMinorsRides: value,
+                                ecoFriendlyVehicle: driver.ecoFriendlyVehicle
+                            )
+                        }
+                    }
+                )) {
+                    Text("Opt in to women and minors requests")
+                }
+                Toggle(isOn: Binding(
+                    get: { driver.ecoFriendlyVehicle },
+                    set: { value in
+                        Task {
+                            await driver.setRidePreferences(
+                                acceptsWomenAndMinorsRides: driver.acceptsWomenAndMinorsRides,
+                                ecoFriendlyVehicle: value
+                            )
+                        }
+                    }
+                )) {
+                    Text("Electric or hybrid vehicle")
+                }
+            }
+            .disabled(!driver.preferencesLoaded || driver.isWorking)
 
             if let status = driver.activeRideStatus {
                 VStack(alignment: .leading, spacing: 8) {

@@ -9,6 +9,7 @@ const {
   canTransitionRide,
   distanceInKilometers,
   isFreshDriverLocation,
+  normalizeDriverRidePreferences,
   normalizeRidePreferences,
   rankNearbyDrivers,
   validCoordinate,
@@ -169,6 +170,18 @@ test("validates rider preferences and defaults omitted preferences to standard m
   });
   assert.throws(() => normalizeRidePreferences({ womanDriverForWomenAndMinors: "yes" }), TypeError);
   assert.throws(() => normalizeRidePreferences({ unknown: true }), TypeError);
+});
+
+test("defaults missing driver preferences to false for older application clients", () => {
+  assert.deepEqual(normalizeDriverRidePreferences(undefined, undefined), {
+    acceptsWomenAndMinorsRides: false,
+    ecoFriendlyVehicle: false,
+  });
+  assert.deepEqual(normalizeDriverRidePreferences(true, undefined), {
+    acceptsWomenAndMinorsRides: true,
+    ecoFriendlyVehicle: false,
+  });
+  assert.throws(() => normalizeDriverRidePreferences("true", false), TypeError);
 });
 
 test("geohash search bounds include nearby drivers and exclude distant regions", () => {
