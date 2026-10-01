@@ -24,7 +24,7 @@ Tryps is a Kotlin Android rideshare MVP for riders and drivers. It uses Jetpack 
 
 ## Requirements
 
-- Android Studio with JDK 17 and Android SDK 35
+- Android Studio with JDK 17, Android SDK 35, and AGP 9.x support
 - A Firebase project with Email/Password Authentication, Firestore, Functions, and Messaging
 - Google Maps SDK for Android, Routes API, and Places API (New)
 - Node.js 22 and Firebase CLI for backend deployment
