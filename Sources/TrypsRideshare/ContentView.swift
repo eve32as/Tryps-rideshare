@@ -1,7 +1,7 @@
 #if canImport(SwiftUI)
 import SwiftUI
 import MapKit
-import CoreLocation
+@preconcurrency import CoreLocation
 
 private enum TrypsStyle {
     static let ink = Color(red: 0.10, green: 0.15, blue: 0.14)
@@ -94,7 +94,7 @@ struct ContentView: View {
             locationManager.requestLocation()
         }
         .task(id: routeRequestID) {
-            await calculateRoute()
+            await calculateRoute(for: routeRequestID)
         }
         .sheet(isPresented: $isChoosingDestination) {
             DestinationPicker(
@@ -111,16 +111,21 @@ struct ContentView: View {
         }
     }
 
-    private func calculateRoute() async {
+    private func calculateRoute(for requestID: String) async {
         guard let pickup = locationManager.location else {
             route = nil
             routeError = nil
             return
         }
 
+        route = nil
         isCalculatingRoute = true
         routeError = nil
-        defer { isCalculatingRoute = false }
+        defer {
+            if requestID == routeRequestID {
+                isCalculatingRoute = false
+            }
+        }
 
         let request = MKDirections.Request()
         request.source = MKMapItem(placemark: MKPlacemark(coordinate: pickup.coordinate))
@@ -150,6 +155,9 @@ struct ContentView: View {
             let minutes = max(1, Int((route.expectedTravelTime / 60).rounded()))
             let miles = route.distance / 1_609.344
             return "\(minutes) min · \(miles.formatted(.number.precision(.fractionLength(1)))) mi"
+        }
+        if locationManager.authorizationStatus == .denied || locationManager.authorizationStatus == .restricted {
+            return "Allow location to see your route"
         }
         return routeError ?? "Waiting for pickup location"
     }
