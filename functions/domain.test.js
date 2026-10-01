@@ -13,6 +13,7 @@ const {
   isFreshDriverLocation,
   isWithinServiceArea,
   geohashCellCenter,
+  filterNearbyDemandZones,
   matchesRidePreferences,
   normalizeDriverRidePreferences,
   normalizeRidePreferences,
@@ -68,6 +69,11 @@ test("aggregates only recent coarse demand zones above the privacy threshold", (
   assert.ok(Math.abs(zones[0].latitude - driverLocation.latitude) < 0.1);
   assert.ok(Math.abs(zones[0].longitude - driverLocation.longitude) < 0.1);
   assert.equal(geohashCellCenter("invalid"), null);
+  const distantZone = geohashCellCenter(geohashForLocation([37.7749, -122.05]).slice(0, 5));
+  assert.deepEqual(
+    filterNearbyDemandZones([...zones, { ...distantZone, demandBand: "3–5" }], driverLocation),
+    zones
+  );
 });
 
 test("calculates a server-owned fare quote for a supported ride", () => {
@@ -197,6 +203,19 @@ test("matches only verified, available, recently located drivers within radius",
   );
   assert.equal(isFreshDriverLocation(now + 20_000, now), true);
   assert.equal(isFreshDriverLocation(now + 31_000, now), false);
+});
+
+test("dispatch excludes fresh drivers outside the supported service area", () => {
+  const now = 1_800_000_000_000;
+  const pickup = { latitude: 37.7749, longitude: -122.4194 };
+  const outsideArea = {
+    uid: "outside",
+    available: true,
+    verified: true,
+    location: { latitude: 37.7749, longitude: -122.05 },
+    locationUpdatedAtMillis: now,
+  };
+  assert.deepEqual(rankNearbyDrivers([outsideArea], pickup, 40, now), []);
 });
 
 test("ranks fresh drivers by proximity with a small freshness penalty", () => {

@@ -97,6 +97,14 @@ function aggregateDemandHeatmap(rides, driverLocation, nowMillis) {
   }).sort((first, second) => first.geohash.localeCompare(second.geohash));
 }
 
+function filterNearbyDemandZones(zones, driverLocation) {
+  if (!Array.isArray(zones) || !isWithinServiceArea(driverLocation)) return [];
+  return zones.filter((zone) =>
+    isWithinServiceArea(zone) &&
+    distanceInKilometers(driverLocation, zone) <= DEMAND_HEATMAP_RADIUS_KM
+  );
+}
+
 function calculateQuote(pickup, dropOff, rideType, routeDistanceMeters, surgeMultiplier = 1) {
   if (!validCoordinate(pickup) || !validCoordinate(dropOff)) {
     throw new TypeError("Pickup and drop-off must be valid coordinates.");
@@ -227,6 +235,7 @@ module.exports = {
   canTransitionRide,
   calculateDemandSurgeMultiplier,
   distanceInKilometers,
+  filterNearbyDemandZones,
   isFreshDriverLocation,
   isWithinServiceArea,
   geohashCellCenter,

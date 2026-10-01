@@ -17,6 +17,7 @@ const {
   calculateQuote,
   calculateDemandSurgeMultiplier,
   canTransitionRide,
+  filterNearbyDemandZones,
   isFreshDriverLocation,
   isWithinServiceArea,
   matchesRidePreferences,
@@ -328,6 +329,9 @@ exports.createRideBooking = onCall({ region: REGION }, async (request) => {
     const quote = quoteSnapshot.data();
     if (quote.uid !== uid || quote.status !== "available") {
       throw new HttpsError("permission-denied", "This quote cannot be used.");
+    }
+    if (!isWithinServiceArea(quote.pickup) || !isWithinServiceArea(quote.dropOff)) {
+      throw new HttpsError("failed-precondition", "This quote is outside the current service area.");
     }
     if (quote.expiresAt.toMillis() <= Date.now()) {
       throw new HttpsError("deadline-exceeded", "The ride quote expired. Request a new quote.");
@@ -644,39 +648,71 @@ exports.setDriverAvailability = onCall({ region: REGION }, async (request) => {
 
 exports.getDriverDemandHeatmap = onCall({ region: REGION }, async (request) => {
   const uid = requireDriver(request);
-  const driverSnapshot = await db.collection("drivers").doc(uid).get();
-  if (!driverSnapshot.exists || driverSnapshot.data().verified !== true ||
-      driverSnapshot.data().available !== true) {
-    throw new HttpsError("failed-precondition", "Go online to view nearby demand.");
-  }
-  const driver = driverSnapshot.data();
+  const driverRef = db.collection("drivers").doc(uid);
   const now = Date.now();
-  if (!isWithinServiceArea(driver.location) ||
-      !isFreshDriverLocation(driver.locationUpdatedAt?.toMillis(), now)) {
-    return { zones: [] };
+  const refresh = await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(driverRef);
+    if (!snapshot.exists || snapshot.data().verified !== true ||
+        snapshot.data().available !== true) {
+      throw new HttpsError("failed-precondition", "Go online to view nearby demand.");
+    }
+    const driver = snapshot.data();
+    const cachedZones = Array.isArray(driver.demandHeatmapZones) ? driver.demandHeatmapZones : [];
+    const cachedAt = driver.demandHeatmapUpdatedAt?.toMillis();
+    if (!isWithinServiceArea(driver.location) ||
+        !isFreshDriverLocation(driver.locationUpdatedAt?.toMillis(), now)) {
+      return { zones: [], updatedAt: now, shouldRefresh: false };
+    }
+    const nearbyCachedZones = filterNearbyDemandZones(cachedZones, driver.location);
+    if (Number.isFinite(cachedAt) && now >= cachedAt && now - cachedAt < 5 * 60_000) {
+      return { zones: nearbyCachedZones, updatedAt: cachedAt, shouldRefresh: false };
+    }
+    const refreshStartedAt = driver.demandHeatmapRefreshStartedAt?.toMillis();
+    if (Number.isFinite(refreshStartedAt) && now >= refreshStartedAt &&
+        now - refreshStartedAt < 2 * 60_000) {
+      return { zones: nearbyCachedZones, updatedAt: cachedAt ?? null, shouldRefresh: false };
+    }
+    transaction.update(driverRef, {
+      demandHeatmapRefreshStartedAt: Timestamp.fromMillis(now),
+    });
+    return { location: driver.location, shouldRefresh: true };
+  });
+  if (!refresh.shouldRefresh) {
+    return { zones: refresh.zones, updatedAt: refresh.updatedAt };
   }
-  const cutoff = Timestamp.fromMillis(now - 30 * 60_000);
-  const activeStatuses = ["searching_driver", "dispatching", "offered"];
-  const snapshots = await Promise.all(activeStatuses.map((status) =>
-    db.collection("rides")
-      .where("status", "==", status)
-      .where("updatedAt", ">=", cutoff)
-      .orderBy("updatedAt", "desc")
-      .limit(100)
-      .get()
-  ));
-  const rides = snapshots.flatMap((snapshot) => snapshot.docs.map((document) => {
-    const data = document.data();
-    return {
-      status: data.status,
-      demandZone: data.demandZone,
-      updatedAtMillis: data.updatedAt?.toMillis(),
-    };
-  }));
-  return {
-    zones: aggregateDemandHeatmap(rides, driver.location, now),
-    updatedAt: now,
-  };
+
+  try {
+    const cutoff = Timestamp.fromMillis(now - 30 * 60_000);
+    const activeStatuses = ["searching_driver", "dispatching", "offered"];
+    const snapshots = await Promise.all(activeStatuses.map((status) =>
+      db.collection("rides")
+        .where("status", "==", status)
+        .where("updatedAt", ">=", cutoff)
+        .orderBy("updatedAt", "desc")
+        .limit(100)
+        .get()
+    ));
+    const rides = snapshots.flatMap((snapshot) => snapshot.docs.map((document) => {
+      const data = document.data();
+      return {
+        status: data.status,
+        demandZone: data.demandZone,
+        updatedAtMillis: data.updatedAt?.toMillis(),
+      };
+    }));
+    const zones = aggregateDemandHeatmap(rides, refresh.location, now);
+    await driverRef.update({
+      demandHeatmapZones: zones,
+      demandHeatmapUpdatedAt: Timestamp.fromMillis(now),
+      demandHeatmapRefreshStartedAt: FieldValue.delete(),
+    });
+    return { zones, updatedAt: now };
+  } catch (error) {
+    await driverRef.update({
+      demandHeatmapRefreshStartedAt: FieldValue.delete(),
+    }).catch(() => {});
+    throw error;
+  }
 });
 
 exports.setDriverRidePreferences = onCall({ region: REGION }, async (request) => {
@@ -784,6 +820,7 @@ exports.claimRideOffer = onCall({ region: REGION }, async (request) => {
     ]);
     if (!driverSnapshot.exists || driverSnapshot.data().verified !== true ||
         !driverSnapshot.data().available ||
+        !isWithinServiceArea(driverSnapshot.data().location) ||
         !isFreshDriverLocation(
           driverSnapshot.data().locationUpdatedAt?.toMillis(),
           Date.now()
