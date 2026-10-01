@@ -34,13 +34,10 @@ service cloud.firestore {
       allow create: if isOwner(userId)
         && validRole(request.resource.data.role)
         && request.resource.data.email == request.auth.token.email
-        && (!("emailLower" in request.resource.data)
-          || request.resource.data.emailLower is string
-          && request.resource.data.emailLower.size() <= 254)
         && (!("vehicleCategory" in request.resource.data)
           || validVehicleCategory(request.resource.data.vehicleCategory, request.resource.data.role))
         && request.resource.data.keys().hasOnly([
-          "displayName", "email", "emailLower", "role", "rating", "vehicleCategory", "createdAt"
+          "displayName", "email", "role", "rating", "vehicleCategory", "createdAt"
         ]);
 
       match /ridePasses/{passId} {

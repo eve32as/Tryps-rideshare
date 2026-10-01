@@ -10,8 +10,15 @@ test("validates cash splits, normalizes email addresses, and rejects unsupported
     participantEmails: ["friend@example.com"],
     passId: null,
   });
+  assert.deepEqual(validatePaymentRequest("RIDE_PASS", [], "pass-123"), {
+    method: "RIDE_PASS",
+    participantEmails: [],
+    passId: "pass-123",
+  });
   assert.throws(() => validatePaymentRequest("SIMULATED_CARD", ["friend@example.com"], null));
   assert.throws(() => validatePaymentRequest("RIDE_PASS", [], null));
+  assert.throws(() => validatePaymentRequest("RIDE_PASS", ["friend@example.com"], "pass-123"));
+  assert.throws(() => validatePaymentRequest("CASH", [], "pass-123"));
   assert.throws(() => validatePaymentRequest("CASH", ["same@example.com", "SAME@example.com"], null));
   assert.throws(() => validatePaymentRequest("CASH", ["bad"], null));
   assert.throws(() => validatePaymentRequest("CASH", Array(5).fill("a@example.com"), null));

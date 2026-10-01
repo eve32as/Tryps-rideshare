@@ -32,7 +32,6 @@ import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.tasks.await
-import java.util.Locale
 
 class FirebaseAccountRepository(
     private val auth: FirebaseAuth,
@@ -78,7 +77,6 @@ class FirebaseAccountRepository(
             mapOf(
                 "displayName" to name.trim(),
                 "email" to email.trim(),
-                "emailLower" to email.trim().lowercase(Locale.ROOT),
                 "role" to role.name,
                 "rating" to 5.0,
                 "vehicleCategory" to vehicleCategory.name,

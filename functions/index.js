@@ -3,6 +3,7 @@
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onDocumentUpdated } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
+const { getAuth } = require("firebase-admin/auth");
 const { initializeApp } = require("firebase-admin/app");
 const { FieldValue, Timestamp, getFirestore } = require("firebase-admin/firestore");
 const {
@@ -120,12 +121,14 @@ exports.requestRide = onCall(async (request) => {
     ? profileRef.collection("ridePasses").doc(paymentRequest.passId)
     : null;
   const splitParticipants = await Promise.all(paymentRequest.participantEmails.map(async (email) => {
-    const matches = await db.collection("users").where("emailLower", "==", email).limit(2).get();
-    const matchingProfile = matches.docs.find((document) =>
-      document.id !== userId && document.get("role") === "RIDER" &&
-      String(document.get("email") ?? "").trim().toLowerCase() === email);
-    if (!matchingProfile) throw new HttpsError("not-found", `No rider account found for ${email}`);
-    return { ref: matchingProfile.ref, email };
+    let authUser;
+    try {
+      authUser = await getAuth().getUserByEmail(email);
+    } catch (error) {
+      if (error.code !== "auth/user-not-found") throw error;
+      throw new HttpsError("failed-precondition", "All split participants must have registered rider accounts");
+    }
+    return { ref: db.collection("users").doc(authUser.uid), email };
   }));
   const splitPayerRefs = splitParticipants.map(({ ref }) => ref);
   const rideRef = db.collection("rides").doc();

@@ -59,7 +59,10 @@ import com.tryps.model.RideStatus
 import com.tryps.model.UserRole
 import com.tryps.model.VehicleCategory
 import java.text.NumberFormat
+import java.text.SimpleDateFormat
 import java.util.Currency
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun TrypsApp(viewModel: MainViewModel, demoMode: Boolean) {
@@ -184,7 +187,12 @@ private fun HomeScreen(state: MainUiState, demoMode: Boolean, viewModel: MainVie
 @Composable
 private fun RiderScreen(state: MainUiState, viewModel: MainViewModel) {
     if (state.activeRide != null) {
-        ActiveRideScreen(state.activeRide, false, viewModel)
+        ActiveRideScreen(
+            state.activeRide,
+            driver = false,
+            isRideOwner = state.user?.id == state.activeRide.riderId,
+            viewModel = viewModel,
+        )
         return
     }
     var pickupQuery by remember(state.pickup) { mutableStateOf(state.pickup?.name.orEmpty()) }
@@ -310,7 +318,12 @@ private fun RidePassSelector(
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             passes.forEach { pass ->
                 DropdownMenuItem(
-                    text = { Text("${pass.remainingRides} rides · expires ${pass.expiresAtEpochMillis}") },
+                    text = {
+                        Text(
+                            "${pass.remainingRides} rides · expires " +
+                                SimpleDateFormat("MMM d, yyyy", Locale.getDefault()).format(Date(pass.expiresAtEpochMillis)),
+                        )
+                    },
                     onClick = {
                         onSelect(pass.id)
                         expanded = false
@@ -374,7 +387,7 @@ private fun PlaceField(label: String, value: String, onChange: (String) -> Unit,
 @Composable
 private fun DriverScreen(state: MainUiState, viewModel: MainViewModel) {
     state.activeRide?.let {
-        ActiveRideScreen(it, true, viewModel)
+        ActiveRideScreen(it, true, false, viewModel)
         return
     }
     Column(Modifier.fillMaxSize().padding(16.dp)) {
@@ -421,7 +434,7 @@ private fun DriverScreen(state: MainUiState, viewModel: MainViewModel) {
 }
 
 @Composable
-private fun ActiveRideScreen(ride: Ride, driver: Boolean, viewModel: MainViewModel) {
+private fun ActiveRideScreen(ride: Ride, driver: Boolean, isRideOwner: Boolean, viewModel: MainViewModel) {
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         RouteMap(ride.pickup, ride.destination, ride.driverLocation, Modifier.weight(1f))
         Card(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
@@ -443,7 +456,7 @@ private fun ActiveRideScreen(ride: Ride, driver: Boolean, viewModel: MainViewMod
                         })
                     }
                 }
-                if (ride.status != RideStatus.IN_PROGRESS) {
+                if (ride.status != RideStatus.IN_PROGRESS && (driver || isRideOwner)) {
                     OutlinedButton(viewModel::cancelRide, Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Cancel ride") }
                 }
             }
@@ -492,7 +505,7 @@ private fun HistoryScreen(state: MainUiState, viewModel: MainViewModel) {
                     ) {
                         Button({ viewModel.confirmCashPayment(ride.id) }) { Text("Confirm cash received") }
                     }
-                    if (state.user?.role == UserRole.RIDER && ride.status == RideStatus.COMPLETED && ride.rating == null) {
+                    if (state.user?.id == ride.riderId && ride.status == RideStatus.COMPLETED && ride.rating == null) {
                         Row { (1..5).forEach { rating -> TextButton({ viewModel.rate(ride.id, rating) }) { Text("★$rating") } } }
                     }
                 }
