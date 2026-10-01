@@ -34,11 +34,19 @@ service cloud.firestore {
       allow create: if isOwner(userId)
         && validRole(request.resource.data.role)
         && request.resource.data.email == request.auth.token.email
+        && (!("emailLower" in request.resource.data)
+          || request.resource.data.emailLower is string
+          && request.resource.data.emailLower.size() <= 254)
         && (!("vehicleCategory" in request.resource.data)
           || validVehicleCategory(request.resource.data.vehicleCategory, request.resource.data.role))
         && request.resource.data.keys().hasOnly([
-          "displayName", "email", "role", "rating", "vehicleCategory", "createdAt"
+          "displayName", "email", "emailLower", "role", "rating", "vehicleCategory", "createdAt"
         ]);
+
+      match /ridePasses/{passId} {
+        allow read: if isOwner(userId);
+        allow write: if false;
+      }
     }
 
     match /drivers/{driverId} {
@@ -54,7 +62,10 @@ service cloud.firestore {
       allow read: if signedIn() && (
         resource.data.status == "SEARCHING" ||
         resource.data.riderId == request.auth.uid ||
-        resource.data.driverId == request.auth.uid
+        resource.data.driverId == request.auth.uid ||
+        (resource.data.payment is map &&
+          resource.data.payment.payerIds is list &&
+          request.auth.uid in resource.data.payment.payerIds)
       );
 
       allow create: if false;

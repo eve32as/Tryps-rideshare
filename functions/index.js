@@ -12,6 +12,7 @@ const {
   rankRideRecommendations,
 } = require("./matching");
 const { calculateSurgeMultiplier, distanceMeters } = require("./pricing");
+const { allocateEqualShares, isRidePassUsable, validatePaymentRequest } = require("./payments");
 
 initializeApp();
 const googleMapsApiKey = defineSecret("GOOGLE_MAPS_API_KEY");
@@ -99,18 +100,44 @@ exports.requestRide = onCall(async (request) => {
   const userId = request.auth.uid;
   const quoteId = request.data?.quoteId;
   const vehicleCategory = request.data?.vehicleCategory;
+  let paymentRequest;
+  try {
+    paymentRequest = validatePaymentRequest(
+      request.data?.paymentMethod ?? "SIMULATED_CARD",
+      request.data?.splitParticipantEmails ?? [],
+      request.data?.ridePassId ?? null,
+    );
+  } catch (error) {
+    throw new HttpsError("invalid-argument", error.message);
+  }
   if (typeof quoteId !== "string" || !quoteId || !isValidRequestedCategory(vehicleCategory)) {
     throw new HttpsError("invalid-argument", "A valid fare quote and vehicle category are required");
   }
   const db = getFirestore();
   const profileRef = db.collection("users").doc(userId);
   const quoteRef = profileRef.collection("rideQuotes").doc(quoteId);
+  const passRef = paymentRequest.passId
+    ? profileRef.collection("ridePasses").doc(paymentRequest.passId)
+    : null;
+  const splitParticipants = await Promise.all(paymentRequest.participantEmails.map(async (email) => {
+    const matches = await db.collection("users").where("emailLower", "==", email).limit(2).get();
+    const matchingProfile = matches.docs.find((document) =>
+      document.id !== userId && document.get("role") === "RIDER" &&
+      String(document.get("email") ?? "").trim().toLowerCase() === email);
+    if (!matchingProfile) throw new HttpsError("not-found", `No rider account found for ${email}`);
+    return { ref: matchingProfile.ref, email };
+  }));
+  const splitPayerRefs = splitParticipants.map(({ ref }) => ref);
   const rideRef = db.collection("rides").doc();
   await db.runTransaction(async (transaction) => {
-    const [profile, quote] = await Promise.all([
+    const reads = [
       transaction.get(profileRef),
       transaction.get(quoteRef),
-    ]);
+      ...splitPayerRefs.map((ref) => transaction.get(ref)),
+    ];
+    if (passRef) reads.push(transaction.get(passRef));
+    const snapshots = await Promise.all(reads);
+    const [profile, quote] = snapshots;
     if (!profile.exists || profile.get("role") !== "RIDER") {
       throw new HttpsError("permission-denied", "Only riders can request rides");
     }
@@ -120,6 +147,59 @@ exports.requestRide = onCall(async (request) => {
     const expiresAt = quote.get("expiresAt");
     if (!expiresAt || expiresAt.toMillis() <= Date.now()) {
       throw new HttpsError("failed-precondition", "Fare quote has expired; request a new quote");
+    }
+    const resolvedPayers = splitParticipants.map(({ email }, index) => {
+      const payer = snapshots[index + 2];
+      if (!payer.exists || payer.get("role") !== "RIDER" ||
+          String(payer.get("email") ?? "").trim().toLowerCase() !== email) {
+        throw new HttpsError("failed-precondition", "A split participant account changed; review the split");
+      }
+      return { id: payer.id, name: payer.get("displayName") || "" };
+    });
+    const fareCents = quote.get("amountCents");
+    let payment;
+    if (paymentRequest.method === "RIDE_PASS") {
+      const pass = snapshots[snapshots.length - 1];
+      const expiresAtMillis = pass.get("expiresAt")?.toMillis?.();
+      if (!pass.exists || pass.get("ownerId") !== userId ||
+          !isRidePassUsable({ remainingRides: pass.get("remainingRides"), expiresAtMillis }, Date.now())) {
+        throw new HttpsError("failed-precondition", "This ride pass is expired or has no rides remaining");
+      }
+      const remainingRides = pass.get("remainingRides") - 1;
+      transaction.update(passRef, {
+        remainingRides,
+        status: remainingRides === 0 ? "EXHAUSTED" : "ACTIVE",
+        lastUsedAt: FieldValue.serverTimestamp(),
+      });
+      payment = {
+        method: "RIDE_PASS",
+        status: "COVERED_BY_PASS",
+        amountCents: 0,
+        coveredFareCents: fareCents,
+        passId: paymentRequest.passId,
+        splits: [],
+      };
+    } else if (paymentRequest.method === "CASH") {
+      const payers = [{ id: userId, name: profile.get("displayName") || "" }, ...resolvedPayers];
+      const allocatedShares = allocateEqualShares(fareCents, payers.map(({ id }) => id));
+      payment = {
+        method: "CASH",
+        status: "PENDING",
+        amountCents: fareCents,
+        payerIds: payers.map(({ id }) => id),
+        splits: allocatedShares.map((share, index) => ({
+          ...share,
+          payerName: payers[index].name,
+          status: "PENDING",
+        })),
+      };
+    } else {
+      payment = {
+        method: "SIMULATED_CARD",
+        status: "SIMULATED",
+        amountCents: fareCents,
+        splits: [],
+      };
     }
     transaction.create(rideRef, {
       riderId: userId,
@@ -137,6 +217,7 @@ exports.requestRide = onCall(async (request) => {
         durationSeconds: quote.get("durationSeconds"),
       },
       vehicleCategory,
+      payment,
       status: "SEARCHING",
       createdAt: FieldValue.serverTimestamp(),
       createdAtEpochMillis: Date.now(),
@@ -144,6 +225,66 @@ exports.requestRide = onCall(async (request) => {
     transaction.update(quoteRef, { usedAt: FieldValue.serverTimestamp() });
   });
   return { rideId: rideRef.id };
+});
+
+exports.confirmCashPayment = onCall(async (request) => {
+  requireAuthentication(request);
+  const driverId = request.auth.uid;
+  const rideId = request.data?.rideId;
+  if (typeof rideId !== "string" || !rideId) throw new HttpsError("invalid-argument", "A ride ID is required");
+  const rideRef = getFirestore().collection("rides").doc(rideId);
+  await getFirestore().runTransaction(async (transaction) => {
+    const ride = await transaction.get(rideRef);
+    if (!ride.exists || ride.get("driverId") !== driverId) {
+      throw new HttpsError("permission-denied", "Only the assigned driver can confirm cash");
+    }
+    const payment = ride.get("payment");
+    if (ride.get("status") !== "COMPLETED" || payment?.method !== "CASH" || payment.status !== "PENDING") {
+      throw new HttpsError("failed-precondition", "Cash can only be confirmed once after the ride is complete");
+    }
+    transaction.update(rideRef, {
+      "payment.status": "RECEIVED",
+      "payment.confirmedBy": driverId,
+      "payment.confirmedAt": FieldValue.serverTimestamp(),
+      "payment.splits": (payment.splits ?? []).map((share) => ({ ...share, status: "RECEIVED" })),
+    });
+  });
+  return { received: true };
+});
+
+exports.issueRidePass = onCall(async (request) => {
+  requireAuthentication(request);
+  if (request.auth.token.admin !== true) {
+    throw new HttpsError("permission-denied", "Only an administrator can issue ride passes");
+  }
+  const ownerId = request.data?.ownerId;
+  const rideCount = request.data?.rideCount;
+  const validDays = request.data?.validDays;
+  if (typeof ownerId !== "string" || !ownerId ||
+      !Number.isSafeInteger(rideCount) || rideCount < 1 || rideCount > 50 ||
+      !Number.isSafeInteger(validDays) || validDays < 1 || validDays > 365) {
+    throw new HttpsError("invalid-argument", "A rider, 1–50 rides, and 1–365 validity days are required");
+  }
+  const db = getFirestore();
+  const ownerRef = db.collection("users").doc(ownerId);
+  const passRef = ownerRef.collection("ridePasses").doc();
+  const expiresAt = Timestamp.fromMillis(Date.now() + validDays * 24 * 60 * 60 * 1000);
+  await db.runTransaction(async (transaction) => {
+    const owner = await transaction.get(ownerRef);
+    if (!owner.exists || owner.get("role") !== "RIDER") {
+      throw new HttpsError("not-found", "Ride passes can only be issued to rider accounts");
+    }
+    transaction.create(passRef, {
+      ownerId,
+      remainingRides: rideCount,
+      totalRides: rideCount,
+      status: "ACTIVE",
+      expiresAt,
+      createdAt: FieldValue.serverTimestamp(),
+      issuedBy: request.auth.uid,
+    });
+  });
+  return { passId: passRef.id };
 });
 
 exports.searchPlaces = onCall({ secrets: [googleMapsApiKey] }, async (request) => {

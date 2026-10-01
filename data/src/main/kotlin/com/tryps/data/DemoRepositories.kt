@@ -5,6 +5,11 @@ import com.tryps.domain.RideRepository
 import com.tryps.model.GeoPoint
 import com.tryps.model.Place
 import com.tryps.model.Ride
+import com.tryps.model.RidePass
+import com.tryps.model.RidePayment
+import com.tryps.model.RidePaymentMethod
+import com.tryps.model.RidePaymentShare
+import com.tryps.model.RidePaymentStatus
 import com.tryps.model.RideQuote
 import com.tryps.model.RideStatus
 import com.tryps.model.UserProfile
@@ -14,6 +19,7 @@ import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 
 class DemoAccountRepository : AccountRepository {
@@ -50,7 +56,8 @@ class DemoRideRepository : RideRepository {
     override fun observeActiveRide(userId: String, role: UserRole): Flow<Ride?> =
         combine(rides, locations) { current, driverLocations ->
             current.firstOrNull {
-                (if (role == UserRole.RIDER) it.riderId == userId else it.driverId == userId) &&
+                (if (role == UserRole.RIDER) it.riderId == userId || it.payment.splits.any { share -> share.payerId == userId }
+                else it.driverId == userId) &&
                     it.status !in setOf(RideStatus.COMPLETED, RideStatus.CANCELLED)
             }?.let { ride -> ride.copy(driverLocation = ride.driverId?.let(driverLocations::get)) }
         }
@@ -58,10 +65,13 @@ class DemoRideRepository : RideRepository {
     override fun observeHistory(userId: String, role: UserRole): Flow<List<Ride>> =
         rides.map { current ->
             current.filter {
-                (if (role == UserRole.RIDER) it.riderId == userId else it.driverId == userId) &&
+                (if (role == UserRole.RIDER) it.riderId == userId || it.payment.splits.any { share -> share.payerId == userId }
+                else it.driverId == userId) &&
                     it.status in setOf(RideStatus.COMPLETED, RideStatus.CANCELLED)
             }
         }
+
+    override fun observeRidePasses(riderId: String): Flow<List<RidePass>> = flowOf(emptyList())
 
     override fun observeOpenRides(driverId: String, vehicleCategory: VehicleCategory): Flow<List<Ride>> =
         combine(rides, locations) { current, driverLocations ->
@@ -93,7 +103,38 @@ class DemoRideRepository : RideRepository {
         destination: Place,
         quote: RideQuote,
         vehicleCategory: VehicleCategory,
+        paymentMethod: RidePaymentMethod,
+        splitParticipantEmails: List<String>,
+        ridePassId: String?,
     ) {
+        require(paymentMethod != RidePaymentMethod.RIDE_PASS || ridePassId != null) {
+            "Ride passes are not available in demo mode"
+        }
+        require(splitParticipantEmails.size <= 4) { "A split can include at most four other riders" }
+        require(paymentMethod == RidePaymentMethod.CASH || splitParticipantEmails.isEmpty()) {
+            "Split payments currently require cash"
+        }
+        val payment = when (paymentMethod) {
+            RidePaymentMethod.CASH -> {
+                val payerIds = listOf(rider.id) + splitParticipantEmails.map(String::trim)
+                val baseShare = quote.amountCents / payerIds.size
+                val remainder = quote.amountCents % payerIds.size
+                RidePayment(
+                    method = paymentMethod,
+                    status = RidePaymentStatus.PENDING,
+                    amountCents = quote.amountCents,
+                    splits = payerIds.mapIndexed { index, payerId ->
+                        RidePaymentShare(payerId, payerId, baseShare + if (index < remainder) 1 else 0)
+                    },
+                )
+            }
+            RidePaymentMethod.SIMULATED_CARD -> RidePayment(
+                method = paymentMethod,
+                status = RidePaymentStatus.SIMULATED,
+                amountCents = quote.amountCents,
+            )
+            RidePaymentMethod.RIDE_PASS -> error("Ride passes are not available in demo mode")
+        }
         rides.value = listOf(
             Ride(
                 id = UUID.randomUUID().toString(),
@@ -104,6 +145,7 @@ class DemoRideRepository : RideRepository {
                 createdAtEpochMillis = System.currentTimeMillis(),
                 riderName = rider.displayName,
                 vehicleCategory = vehicleCategory,
+                payment = payment,
             ),
         ) + rides.value
     }
@@ -113,6 +155,17 @@ class DemoRideRepository : RideRepository {
     }
 
     override suspend fun updateStatus(rideId: String, status: RideStatus) = update(rideId) { it.copy(status = status) }
+
+    override suspend fun confirmCashPayment(rideId: String, driverId: String) = update(rideId) { ride ->
+        require(ride.driverId == driverId && ride.status == RideStatus.COMPLETED)
+        require(ride.payment.method == RidePaymentMethod.CASH && ride.payment.status == RidePaymentStatus.PENDING)
+        ride.copy(
+            payment = ride.payment.copy(
+                status = RidePaymentStatus.RECEIVED,
+                splits = ride.payment.splits.map { it.copy(status = RidePaymentStatus.RECEIVED) },
+            ),
+        )
+    }
 
     override suspend fun updateDriverLocation(driverId: String, location: GeoPoint, available: Boolean) {
         locations.value = locations.value + (driverId to location)

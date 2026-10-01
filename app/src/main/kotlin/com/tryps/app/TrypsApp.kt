@@ -52,6 +52,9 @@ import com.google.maps.android.compose.rememberCameraPositionState
 import com.tryps.model.GeoPoint
 import com.tryps.model.Place
 import com.tryps.model.Ride
+import com.tryps.model.RidePass
+import com.tryps.model.RidePaymentMethod
+import com.tryps.model.RidePaymentStatus
 import com.tryps.model.RideStatus
 import com.tryps.model.UserRole
 import com.tryps.model.VehicleCategory
@@ -225,14 +228,103 @@ private fun RiderScreen(state: MainUiState, viewModel: MainViewModel) {
                         } else {
                             Text("No demand adjustment · ×1.0")
                         }
-                        Text("Simulated payment ·•••• 4242")
+                        Text(
+                            when (state.paymentMethod) {
+                                RidePaymentMethod.CASH -> "Cash collected by the driver after the trip"
+                                RidePaymentMethod.RIDE_PASS -> "Covered by an eligible ride pass"
+                                RidePaymentMethod.SIMULATED_CARD -> "Simulated card · no charge will be made"
+                            },
+                        )
                     }
                     Text(money(state.quote.amountCents, state.quote.currency), style = MaterialTheme.typography.titleLarge)
                 }
             }
-            Button(viewModel::requestRide, Modifier.fillMaxWidth().padding(bottom = 12.dp)) { Text("Request Tryps") }
+            PaymentMethodSelector(state.paymentMethod, viewModel::selectPaymentMethod)
+            when (state.paymentMethod) {
+                RidePaymentMethod.CASH -> OutlinedTextField(
+                    value = state.splitParticipantEmails,
+                    onValueChange = viewModel::setSplitParticipantEmails,
+                    label = { Text("Split with rider emails (optional)") },
+                    supportingText = { Text("Up to four riders, comma-separated; all shares are collected in cash") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                RidePaymentMethod.RIDE_PASS -> RidePassSelector(
+                    state.ridePasses,
+                    state.selectedRidePassId,
+                    viewModel::selectRidePass,
+                )
+                RidePaymentMethod.SIMULATED_CARD -> Text(
+                    "Card processing is not connected; this selection is for demo/testing only.",
+                    modifier = Modifier.padding(vertical = 8.dp),
+                )
+            }
+            val canRequest = state.paymentMethod != RidePaymentMethod.RIDE_PASS ||
+                state.ridePasses.any { it.id == state.selectedRidePassId }
+            Button(
+                viewModel::requestRide,
+                Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                enabled = canRequest,
+            ) { Text("Request Tryps") }
         }
     }
+}
+
+@Composable
+private fun PaymentMethodSelector(selected: RidePaymentMethod, onSelect: (RidePaymentMethod) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box(Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = { expanded = true }) {
+            Text("Payment: ${selected.paymentLabel()}")
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            RidePaymentMethod.entries.forEach { method ->
+                DropdownMenuItem(
+                    text = { Text(method.paymentLabel()) },
+                    onClick = {
+                        onSelect(method)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RidePassSelector(
+    passes: List<RidePass>,
+    selectedId: String?,
+    onSelect: (String?) -> Unit,
+) {
+    if (passes.isEmpty()) {
+        Text("No active passes. Passes must be issued to your account.", modifier = Modifier.padding(vertical = 8.dp))
+        return
+    }
+    var expanded by remember { mutableStateOf(false) }
+    Box(Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = { expanded = true }) {
+            val selected = passes.firstOrNull { it.id == selectedId }
+            Text(selected?.let { "Pass: ${it.remainingRides} rides remaining" } ?: "Choose a ride pass")
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            passes.forEach { pass ->
+                DropdownMenuItem(
+                    text = { Text("${pass.remainingRides} rides · expires ${pass.expiresAtEpochMillis}") },
+                    onClick = {
+                        onSelect(pass.id)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+private fun RidePaymentMethod.paymentLabel(): String = when (this) {
+    RidePaymentMethod.CASH -> "Cash"
+    RidePaymentMethod.SIMULATED_CARD -> "Simulated card"
+    RidePaymentMethod.RIDE_PASS -> "Ride pass"
 }
 
 @Composable
@@ -337,6 +429,10 @@ private fun ActiveRideScreen(ride: Ride, driver: Boolean, viewModel: MainViewMod
                 Text(ride.status.name.replace("_", " "), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text("${ride.pickup.name} → ${ride.destination.name}")
                 Text(if (driver) "Rider: ${ride.riderName}" else if (ride.driverName.isBlank()) "Finding your driver…" else "Driver: ${ride.driverName}")
+                Text("Payment: ${ride.payment.method.paymentLabel()} · ${ride.payment.status.paymentLabel()}")
+                ride.payment.splits.forEach { share ->
+                    Text("${share.payerName}: ${money(share.amountCents, ride.quote.currency)} · ${share.status.paymentLabel()}")
+                }
                 if (driver && ride.status != RideStatus.SEARCHING) {
                     Button(viewModel::advanceRide, Modifier.fillMaxWidth().padding(top = 8.dp)) {
                         Text(when (ride.status) {
@@ -385,6 +481,17 @@ private fun HistoryScreen(state: MainUiState, viewModel: MainViewModel) {
                 Column(Modifier.padding(16.dp)) {
                     Text("${ride.pickup.name} → ${ride.destination.name}", fontWeight = FontWeight.Bold)
                     Text("${ride.status.name.lowercase().replaceFirstChar(Char::uppercase)} · ${money(ride.quote.amountCents, ride.quote.currency)}")
+                    Text("Payment: ${ride.payment.method.paymentLabel()} · ${ride.payment.status.paymentLabel()}")
+                    ride.payment.splits.forEach { share ->
+                        Text("${share.payerName}: ${money(share.amountCents, ride.quote.currency)} · ${share.status.paymentLabel()}")
+                    }
+                    if (state.user?.role == UserRole.DRIVER &&
+                        ride.status == RideStatus.COMPLETED &&
+                        ride.payment.method == RidePaymentMethod.CASH &&
+                        ride.payment.status == RidePaymentStatus.PENDING
+                    ) {
+                        Button({ viewModel.confirmCashPayment(ride.id) }) { Text("Confirm cash received") }
+                    }
                     if (state.user?.role == UserRole.RIDER && ride.status == RideStatus.COMPLETED && ride.rating == null) {
                         Row { (1..5).forEach { rating -> TextButton({ viewModel.rate(ride.id, rating) }) { Text("★$rating") } } }
                     }
@@ -412,3 +519,10 @@ private fun GeoPoint.toLatLng() = LatLng(latitude, longitude)
 private fun money(cents: Int, currency: String): String = NumberFormat.getCurrencyInstance().apply {
     this.currency = runCatching { Currency.getInstance(currency) }.getOrDefault(Currency.getInstance("USD"))
 }.format(cents / 100.0)
+
+private fun RidePaymentStatus.paymentLabel(): String = when (this) {
+    RidePaymentStatus.PENDING -> "awaiting driver confirmation"
+    RidePaymentStatus.RECEIVED -> "received"
+    RidePaymentStatus.SIMULATED -> "simulated, not charged"
+    RidePaymentStatus.COVERED_BY_PASS -> "covered by pass"
+}

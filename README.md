@@ -5,7 +5,7 @@ Tryps is a Kotlin Android rideshare MVP for riders and drivers. It uses Jetpack 
 ## Features
 
 - Email/password registration and sign-in with rider and driver roles
-- Pickup and destination search, route map, demand-aware server fare quotes, and simulated payment
+- Pickup and destination search, route map, demand-aware server fare quotes, cash collection tracking, cash split allocation, and admin-issued ride passes
 - Ride request, category-aware driver acceptance, trip status, cancellation, history, and ratings
 - Driver vehicle categories, availability, location updates, and traffic-aware pickup recommendations
 - Push-notification service for ride updates
@@ -68,5 +68,8 @@ workflow can also be started manually from the Actions tab.
 - `users/{uid}` stores account role, profile, driver vehicle category, and server-maintained matching metrics.
 - `drivers/{uid}` stores availability and latest location.
 - `rides/{rideId}` stores route, requested vehicle category, server quote, participants, status, pickup ETA at acceptance, and optional rating.
+- `users/{uid}/ridePasses/{passId}` stores server-issued pass ride counts and expiration; clients may read but cannot issue or modify passes.
 
 Ride recommendations use a deterministic reliability-adjusted score based on traffic-aware pickup ETA, driver cancellation/completion history, observed ETA error, and vehicle-category compatibility. Trusted Cloud Functions record cancellations, completions, and pickup-time error samples using idempotent events. Fare quotes apply capped 1.00×/1.25×/1.50× demand multipliers based on nearby open rides and recently available drivers; each rider-bound quote expires after five minutes and can be used for one ride request. This is a heuristic rather than trained ML; weather forecasts, trained models, and automatic multi-driver assignment remain future work.
+
+Cash ride requests can allocate the fare in equal-cent shares across the requesting rider and up to four registered rider accounts. This is an offline cash arrangement only: the app does not charge invited participants, and the assigned driver confirms receipt of the total cash fare after completing the trip. A ride pass covers one ride per remaining pass credit; only a caller with the trusted Firebase Auth `admin` custom claim can issue passes through the `issueRidePass` Cloud Function. Pass purchases and card processing are not implemented. The card choice remains explicitly simulated and never charges a card. Pass sales, card payments, refunds, and settlements require a payment-provider integration and its server-side verification/webhook setup.

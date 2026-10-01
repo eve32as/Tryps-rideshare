@@ -9,6 +9,8 @@ import com.tryps.domain.RideValidation
 import com.tryps.model.GeoPoint
 import com.tryps.model.Place
 import com.tryps.model.Ride
+import com.tryps.model.RidePass
+import com.tryps.model.RidePaymentMethod
 import com.tryps.model.RideQuote
 import com.tryps.model.RideStatus
 import com.tryps.model.UserProfile
@@ -30,6 +32,7 @@ data class MainUiState(
     val activeRide: Ride? = null,
     val openRides: List<Ride> = emptyList(),
     val history: List<Ride> = emptyList(),
+    val ridePasses: List<RidePass> = emptyList(),
     val pickup: Place? = null,
     val destination: Place? = null,
     val suggestions: List<Place> = emptyList(),
@@ -39,6 +42,9 @@ data class MainUiState(
     val isBusy: Boolean = false,
     val error: String? = null,
     val requestedVehicleCategory: VehicleCategory = VehicleCategory.STANDARD,
+    val paymentMethod: RidePaymentMethod = RidePaymentMethod.SIMULATED_CARD,
+    val splitParticipantEmails: String = "",
+    val selectedRidePassId: String? = null,
 )
 
 class MainViewModel(
@@ -121,7 +127,39 @@ class MainViewModel(
         val pickup = snapshot.pickup ?: return
         val destination = snapshot.destination ?: return
         val quote = snapshot.quote ?: return
-        action { rides.request(user, pickup, destination, quote, snapshot.requestedVehicleCategory) }
+        val participants = snapshot.splitParticipantEmails.split(",")
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+        action {
+            rides.request(
+                user,
+                pickup,
+                destination,
+                quote,
+                snapshot.requestedVehicleCategory,
+                snapshot.paymentMethod,
+                participants,
+                snapshot.selectedRidePassId,
+            )
+        }
+    }
+
+    fun selectPaymentMethod(method: RidePaymentMethod) {
+        mutableState.update {
+            it.copy(
+                paymentMethod = method,
+                splitParticipantEmails = if (method == RidePaymentMethod.CASH) it.splitParticipantEmails else "",
+                selectedRidePassId = if (method == RidePaymentMethod.RIDE_PASS) it.selectedRidePassId else null,
+            )
+        }
+    }
+
+    fun setSplitParticipantEmails(emails: String) {
+        mutableState.update { it.copy(splitParticipantEmails = emails) }
+    }
+
+    fun selectRidePass(passId: String?) {
+        mutableState.update { it.copy(selectedRidePassId = passId) }
     }
 
     fun selectVehicleCategory(category: VehicleCategory) {
@@ -159,6 +197,11 @@ class MainViewModel(
 
     fun rate(rideId: String, rating: Int) = action { rides.rate(rideId, rating) }
 
+    fun confirmCashPayment(rideId: String) {
+        val driver = state.value.user ?: return
+        action { rides.confirmCashPayment(rideId, driver.id) }
+    }
+
     fun clearError() = mutableState.update { it.copy(error = null) }
 
     private fun observeUserData(user: UserProfile?) {
@@ -173,6 +216,11 @@ class MainViewModel(
             launch {
                 rides.observeHistory(user.id, user.role).catch { showError(it) }.collect { history ->
                     mutableState.update { it.copy(history = history) }
+                }
+            }
+            if (user.role == UserRole.RIDER) launch {
+                rides.observeRidePasses(user.id).catch { showError(it) }.collect { passes ->
+                    mutableState.update { it.copy(ridePasses = passes) }
                 }
             }
             if (user.role == UserRole.DRIVER) launch {

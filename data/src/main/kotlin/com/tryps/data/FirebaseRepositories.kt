@@ -12,6 +12,11 @@ import com.tryps.model.DriverMatchingMetrics
 import com.tryps.model.GeoPoint
 import com.tryps.model.Place
 import com.tryps.model.Ride
+import com.tryps.model.RidePass
+import com.tryps.model.RidePayment
+import com.tryps.model.RidePaymentMethod
+import com.tryps.model.RidePaymentShare
+import com.tryps.model.RidePaymentStatus
 import com.tryps.model.RideQuote
 import com.tryps.model.RideStatus
 import com.tryps.model.UserProfile
@@ -27,6 +32,7 @@ import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.tasks.await
+import java.util.Locale
 
 class FirebaseAccountRepository(
     private val auth: FirebaseAuth,
@@ -72,6 +78,7 @@ class FirebaseAccountRepository(
             mapOf(
                 "displayName" to name.trim(),
                 "email" to email.trim(),
+                "emailLower" to email.trim().lowercase(Locale.ROOT),
                 "role" to role.name,
                 "rating" to 5.0,
                 "vehicleCategory" to vehicleCategory.name,
@@ -119,16 +126,36 @@ class FirebaseRideRepository(
     override fun observeActiveRide(userId: String, role: UserRole): Flow<Ride?> =
         rides.map { current ->
             current.firstOrNull {
-                (if (role == UserRole.RIDER) it.riderId == userId else it.driverId == userId) &&
+                (if (role == UserRole.RIDER) it.riderId == userId || it.payment.splits.any { share -> share.payerId == userId }
+                else it.driverId == userId) &&
                     it.status !in setOf(RideStatus.COMPLETED, RideStatus.CANCELLED)
             }
         }
 
     override fun observeHistory(userId: String, role: UserRole): Flow<List<Ride>> = rides.map { current ->
         current.filter {
-            (if (role == UserRole.RIDER) it.riderId == userId else it.driverId == userId) &&
+            (if (role == UserRole.RIDER) it.riderId == userId || it.payment.splits.any { share -> share.payerId == userId }
+            else it.driverId == userId) &&
                 it.status in setOf(RideStatus.COMPLETED, RideStatus.CANCELLED)
         }.sortedByDescending(Ride::createdAtEpochMillis)
+    }
+
+    override fun observeRidePasses(riderId: String): Flow<List<RidePass>> = callbackFlow {
+        val listener = firestore.collection("users").document(riderId).collection("ridePasses")
+            .whereEqualTo("status", "ACTIVE")
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) close(error)
+                else trySend(snapshot?.documents.orEmpty().mapNotNull { pass ->
+                    val remainingRides = pass.getLong("remainingRides")?.toInt() ?: return@mapNotNull null
+                    val expiresAt = pass.getTimestamp("expiresAt")?.toDate()?.time ?: return@mapNotNull null
+                    if (remainingRides > 0 && expiresAt > System.currentTimeMillis()) {
+                        RidePass(pass.id, remainingRides, expiresAt)
+                    } else {
+                        null
+                    }
+                })
+            }
+        awaitClose { listener.remove() }
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -235,10 +262,27 @@ class FirebaseRideRepository(
         destination: Place,
         quote: RideQuote,
         vehicleCategory: VehicleCategory,
+        paymentMethod: RidePaymentMethod,
+        splitParticipantEmails: List<String>,
+        ridePassId: String?,
     ) {
         require(!quote.quoteId.isNullOrBlank()) { "A valid server quote is required to request a ride" }
         functions.getHttpsCallable("requestRide")
-            .call(mapOf("quoteId" to quote.quoteId, "vehicleCategory" to vehicleCategory.name))
+            .call(
+                mapOf(
+                    "quoteId" to quote.quoteId,
+                    "vehicleCategory" to vehicleCategory.name,
+                    "paymentMethod" to paymentMethod.name,
+                    "splitParticipantEmails" to splitParticipantEmails,
+                    "ridePassId" to ridePassId,
+                ),
+            )
+            .await()
+    }
+
+    override suspend fun confirmCashPayment(rideId: String, driverId: String) {
+        functions.getHttpsCallable("confirmCashPayment")
+            .call(mapOf("rideId" to rideId, "driverId" to driverId))
             .await()
     }
 
@@ -319,6 +363,7 @@ private fun DocumentSnapshot.toRide(): Ride? = runCatching {
         vehicleCategory = getString("vehicleCategory")?.let {
             enumValueOrDefault(it, VehicleCategory.STANDARD)
         } ?: VehicleCategory.ANY,
+        payment = get("payment").toRidePayment(),
     )
 }.getOrNull()
 
@@ -345,6 +390,26 @@ private fun Any?.toQuote(): RideQuote {
         surgeMultiplier = (map["surgeMultiplier"] as? Number)?.toDouble() ?: 1.0,
         demandCount = (map["demandCount"] as? Number)?.toInt() ?: 0,
         availableDriverCount = (map["availableDriverCount"] as? Number)?.toInt() ?: 0,
+    )
+}
+
+private fun Any?.toRidePayment(): RidePayment {
+    val map = this as? Map<*, *> ?: return RidePayment()
+    val splits = (map["splits"] as? List<*>).orEmpty().mapNotNull { item ->
+        val share = item as? Map<*, *> ?: return@mapNotNull null
+        RidePaymentShare(
+            payerId = share["payerId"] as? String ?: return@mapNotNull null,
+            payerName = share["payerName"] as? String ?: "",
+            amountCents = (share["amountCents"] as? Number)?.toInt() ?: 0,
+            status = enumValueOrDefault(share["status"] as? String, RidePaymentStatus.PENDING),
+        )
+    }
+    return RidePayment(
+        method = enumValueOrDefault(map["method"] as? String, RidePaymentMethod.SIMULATED_CARD),
+        status = enumValueOrDefault(map["status"] as? String, RidePaymentStatus.SIMULATED),
+        amountCents = (map["amountCents"] as? Number)?.toInt() ?: 0,
+        passId = map["passId"] as? String,
+        splits = splits,
     )
 }
 

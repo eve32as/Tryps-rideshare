@@ -8,6 +8,31 @@ enum class RideStatus {
     SEARCHING, ACCEPTED, DRIVER_ARRIVING, IN_PROGRESS, COMPLETED, CANCELLED
 }
 
+enum class RidePaymentMethod { CASH, SIMULATED_CARD, RIDE_PASS }
+
+enum class RidePaymentStatus { PENDING, RECEIVED, SIMULATED, COVERED_BY_PASS }
+
+data class RidePaymentShare(
+    val payerId: String = "",
+    val payerName: String = "",
+    val amountCents: Int = 0,
+    val status: RidePaymentStatus = RidePaymentStatus.PENDING,
+)
+
+data class RidePayment(
+    val method: RidePaymentMethod = RidePaymentMethod.SIMULATED_CARD,
+    val status: RidePaymentStatus = RidePaymentStatus.SIMULATED,
+    val amountCents: Int = 0,
+    val passId: String? = null,
+    val splits: List<RidePaymentShare> = emptyList(),
+)
+
+data class RidePass(
+    val id: String = "",
+    val remainingRides: Int = 0,
+    val expiresAtEpochMillis: Long = 0,
+)
+
 data class GeoPoint(
     val latitude: Double = 0.0,
     val longitude: Double = 0.0,
@@ -66,4 +91,5 @@ data class Ride(
     val pickupEtaSeconds: Int? = null,
     val vehicleCategory: VehicleCategory = VehicleCategory.ANY,
     val matchingScoreSeconds: Int? = null,
+    val payment: RidePayment = RidePayment(),
 )
