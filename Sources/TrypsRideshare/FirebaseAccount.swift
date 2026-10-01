@@ -23,8 +23,9 @@ final class FirebaseAccountStore: ObservableObject {
         isConfigured = FirebaseApp.app() != nil
         if isConfigured {
             authListener = Auth.auth().addStateDidChangeListener { [weak self] _, user in
+                let currentEmail = user?.email
                 Task { @MainActor in
-                    self?.email = user?.email
+                    self?.email = currentEmail
                 }
             }
         }
@@ -66,9 +67,10 @@ final class FirebaseAccountStore: ObservableObject {
         isWorking = true
         errorMessage = nil
         let completion: (AuthDataResult?, Error?) -> Void = { [weak self] _, error in
+            let didFail = error != nil
             Task { @MainActor in
                 self?.isWorking = false
-                if error != nil {
+                if didFail {
                     self?.errorMessage = createAccount
                         ? "Couldn’t create your account. Check your details and try again."
                         : "Couldn’t sign in. Check your email and password."
