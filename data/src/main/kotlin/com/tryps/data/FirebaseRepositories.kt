@@ -84,7 +84,8 @@ class FirebaseRideRepository(
         if (query.length < 2) return emptyList()
         val payload = mutableMapOf<String, Any>("query" to query)
         near?.let { payload["near"] = it.toMap() }
-        val result = functions.getHttpsCallable("searchPlaces").call(payload).await().getResult() as? Map<*, *>
+        @Suppress("INVISIBLE_REFERENCE")
+        val result = functions.getHttpsCallable("searchPlaces").call(payload).await().data as? Map<*, *>
         val places = result?.get("places") as? List<*> ?: return emptyList()
         return places.mapNotNull { value ->
             val map = value as? Map<*, *> ?: return@mapNotNull null
@@ -116,9 +117,10 @@ class FirebaseRideRepository(
     }
 
     override suspend fun quote(pickup: Place, destination: Place): RideQuote {
+        @Suppress("INVISIBLE_REFERENCE")
         val result = functions.getHttpsCallable("getRideQuote").call(
             mapOf("pickup" to pickup.location.toMap(), "destination" to destination.location.toMap()),
-        ).await().getResult() as? Map<*, *> ?: error("Invalid quote response")
+        ).await().data as? Map<*, *> ?: error("Invalid quote response")
         return RideQuote(
             amountCents = (result["amountCents"] as Number).toInt(),
             currency = result["currency"] as? String ?: "USD",
