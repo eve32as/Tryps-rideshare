@@ -2,17 +2,23 @@ import Foundation
 
 struct TurnByTurnProgress {
     private(set) var currentStepIndex = 0
+    private var closestDistanceToManeuver = Double.infinity
 
     mutating func reset() {
         currentStepIndex = 0
+        closestDistanceToManeuver = .infinity
     }
 
     mutating func advanceIfReached(distanceToManeuver: Double, stepCount: Int, threshold: Double = 35) -> Bool {
-        guard distanceToManeuver.isFinite,
-              distanceToManeuver >= 0,
-              distanceToManeuver <= threshold,
-              currentStepIndex + 1 < stepCount else { return false }
+        guard distanceToManeuver.isFinite, distanceToManeuver >= 0 else { return false }
+        guard currentStepIndex + 1 < stepCount else { return false }
+        let passedManeuver = closestDistanceToManeuver <= threshold * 2 &&
+            distanceToManeuver > closestDistanceToManeuver + threshold
+        let reachedOrPassed = distanceToManeuver <= threshold || passedManeuver
+        closestDistanceToManeuver = min(closestDistanceToManeuver, distanceToManeuver)
+        guard reachedOrPassed else { return false }
         currentStepIndex += 1
+        closestDistanceToManeuver = .infinity
         return true
     }
 }
@@ -49,6 +55,8 @@ final class DriverNavigationStore: NSObject, ObservableObject, CLLocationManager
     private var destination: CLLocationCoordinate2D?
     private var routeSteps: [MKRoute.Step] = []
     private var progress = TurnByTurnProgress()
+    private var remainingCurrentStepDistance: CLLocationDistance = 0
+    private var lastProgressLocation: CLLocation?
     private var routeRequestID: UUID?
     private var activeRideID: String?
     private var requestedAlwaysAuthorization = false
@@ -75,6 +83,8 @@ final class DriverNavigationStore: NSObject, ObservableObject, CLLocationManager
         route = nil
         routeSteps = []
         progress.reset()
+        remainingCurrentStepDistance = 0
+        lastProgressLocation = nil
         routedFromLiveLocation = false
         isNavigating = true
         try? AVAudioSession.sharedInstance().setCategory(
@@ -101,6 +111,9 @@ final class DriverNavigationStore: NSObject, ObservableObject, CLLocationManager
         destinationName = ""
         route = nil
         routeSteps = []
+        progress.reset()
+        remainingCurrentStepDistance = 0
+        lastProgressLocation = nil
         isNavigating = false
         speechSynthesizer.stopSpeaking(at: .immediate)
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
@@ -174,6 +187,10 @@ final class DriverNavigationStore: NSObject, ObservableObject, CLLocationManager
                 errorMessage = nil
                 currentInstruction = routeSteps[0].instructions
                 nextInstruction = routeSteps.dropFirst().first?.instructions
+                remainingCurrentStepDistance = routeSteps[0].distance
+                lastProgressLocation = locationManager.location
+                remainingDistance = routeSteps.reduce(0) { $0 + $1.distance }
+                remainingTime = routeSteps.reduce(0) { $0 + $1.expectedTravelTime }
                 announce(routeSteps[0].instructions)
                 publishCarPlayUpdate()
             } catch {
@@ -199,14 +216,26 @@ final class DriverNavigationStore: NSObject, ObservableObject, CLLocationManager
         guard let endpoint = coordinates.last else { return }
         let endpointLocation = CLLocation(latitude: endpoint.latitude, longitude: endpoint.longitude)
         distanceToNextManeuver = location.distance(from: endpointLocation)
+        if let lastProgressLocation {
+            remainingCurrentStepDistance = max(
+                0,
+                remainingCurrentStepDistance - location.distance(from: lastProgressLocation)
+            )
+        }
+        self.lastProgressLocation = location
         if progress.advanceIfReached(distanceToManeuver: distanceToNextManeuver, stepCount: routeSteps.count) {
             let nextStepIndex = progress.currentStepIndex
+            remainingCurrentStepDistance = routeSteps[nextStepIndex].distance
             announce(routeSteps[nextStepIndex].instructions)
         }
         let currentStepIndex = progress.currentStepIndex
-        let remainingSteps = routeSteps[currentStepIndex...]
-        remainingDistance = remainingSteps.reduce(0) { $0 + $1.distance }
-        remainingTime = remainingSteps.reduce(0) { $0 + $1.expectedTravelTime }
+        let currentStep = routeSteps[currentStepIndex]
+        let remainingSteps = routeSteps.dropFirst(currentStepIndex + 1)
+        remainingDistance = remainingCurrentStepDistance + remainingSteps.reduce(0) { $0 + $1.distance }
+        let currentStepTime = currentStep.distance > 0
+            ? currentStep.expectedTravelTime * remainingCurrentStepDistance / currentStep.distance
+            : 0
+        remainingTime = currentStepTime + remainingSteps.reduce(0) { $0 + $1.expectedTravelTime }
         currentInstruction = routeSteps[currentStepIndex].instructions
         nextInstruction = routeSteps.dropFirst(currentStepIndex + 1).first?.instructions
         publishCarPlayUpdate()
@@ -233,7 +262,7 @@ final class DriverNavigationStore: NSObject, ObservableObject, CLLocationManager
                 "rideID": activeRideID ?? "",
                 "destinationName": destinationName,
                 "instructions": instructions,
-                "currentStepIndex": currentStepIndex,
+                "currentStepIndex": progress.currentStepIndex,
                 "currentInstruction": currentInstruction,
                 "distanceToNextManeuver": distanceToNextManeuver,
                 "remainingDistance": remainingDistance,

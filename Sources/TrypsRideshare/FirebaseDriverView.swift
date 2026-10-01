@@ -10,17 +10,6 @@ private struct DriverOffer: Identifiable {
     let dropOff: CLLocationCoordinate2D
     let rideType: String
 }
-.onChange(of: driver.activeRideStatus) { _, status in
-    guard let rideID = driver.activeRideId,
-          let pickup = driver.activeRidePickup,
-          let dropOff = driver.activeRideDropOff,
-          let status else {
-        navigation.stop()
-        return
-    }
-    navigation.start(rideID: rideID, pickup: pickup, dropOff: dropOff, status: status)
-}
-
 @MainActor
 private final class FirebaseDriverStore: ObservableObject {
     static let shared = FirebaseDriverStore()
@@ -303,6 +292,7 @@ struct FirebaseDriverView: View {
             if let userID = account.userID {
                 driver.start(userID: userID, isDriver: account.isDriver)
             }
+            startNavigationIfNeeded()
         }
         .onChange(of: account.isDriver) { _, isDriver in
             if let userID = account.userID {
@@ -317,14 +307,10 @@ struct FirebaseDriverView: View {
             }
         }
         .onChange(of: driver.activeRideStatus) { _, status in
-            guard let rideID = driver.activeRideId,
-                  let pickup = driver.activeRidePickup,
-                  let dropOff = driver.activeRideDropOff,
-                  let status else {
-                navigation.stop()
-                return
-            }
-            navigation.start(rideID: rideID, pickup: pickup, dropOff: dropOff, status: status)
+            startNavigationIfNeeded()
+        }
+        .onChange(of: driver.activeRideId) { _, _ in
+            startNavigationIfNeeded()
         }
         .task(id: driver.isAvailable) {
             guard driver.isAvailable else {
@@ -479,6 +465,17 @@ struct FirebaseDriverView: View {
         case "in_progress": "Complete trip"
         default: "Update trip"
         }
+    }
+
+    private func startNavigationIfNeeded() {
+        guard let rideID = driver.activeRideId,
+              let pickup = driver.activeRidePickup,
+              let dropOff = driver.activeRideDropOff,
+              let status = driver.activeRideStatus else {
+            navigation.stop()
+            return
+        }
+        navigation.start(rideID: rideID, pickup: pickup, dropOff: dropOff, status: status)
     }
 }
 #elseif canImport(SwiftUI)
