@@ -55,6 +55,15 @@ struct ContentView: View {
     @State private var destinationCoordinate: CLLocationCoordinate2D?
     @State private var resolvedPickupLabel: String?
     @State private var resolvedDestinationLabel: String?
+    @State private var scheduleForLater = false
+    @State private var scheduledPickup = Calendar.current.date(byAdding: .hour, value: 1, to: .now) ?? .now.addingTimeInterval(3600)
+    @State private var cloudRides: [TripStatus] = []
+    @State private var savedPlaces: [SavedPlace] = []
+    @State private var isSavedPlacesPresented = false
+    @State private var isRatingPresented = false
+    @State private var ratingRideID: String?
+    @State private var ratingTarget: String?
+    @State private var selectedPlaceIsPickup = true
     @State private var sessionToken = SessionStore.loadToken()
     @State private var accountRole = SessionStore.loadRole()
     @State private var driverAvailable = false
@@ -69,6 +78,15 @@ struct ContentView: View {
 
     private var selectedRide: RideOption {
         RideOption.all.first(where: { $0.id == selectedRideID }) ?? RideOption.all[0]
+    }
+
+    private var currentSelectedSavedPlace: RideLocation? {
+        let coordinate = selectedPlaceIsPickup ? pickupCoordinate : destinationCoordinate
+        guard let coordinate else { return nil }
+        let label = selectedPlaceIsPickup
+            ? (resolvedPickupLabel ?? pickup)
+            : (resolvedDestinationLabel ?? destination)
+        return RideLocation(label: label, coordinate: coordinate)
     }
 
     var body: some View {
@@ -106,6 +124,28 @@ struct ContentView: View {
             }
             .ignoresSafeArea()
         }
+        .sheet(isPresented: $isSavedPlacesPresented) {
+            if let sessionToken {
+                SavedPlacesSheet(
+                    token: sessionToken,
+                    currentPlace: currentSelectedSavedPlace,
+                    defaultName: selectedPlaceIsPickup ? "Pickup" : "Destination"
+                ) { place in
+                    applySavedPlace(place)
+                } onChange: {
+                    Task { await refreshSavedPlaces() }
+                }
+            }
+        }
+        .sheet(isPresented: $isRatingPresented) {
+            if let sessionToken, let ratingRideID, let ratingTarget {
+                RatingSheet(target: ratingTarget) { stars, comment in
+                    Task { await submitRating(rideID: ratingRideID, stars: stars, comment: comment, token: sessionToken) }
+                }
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
+            }
+        }
         .alert("Tryps", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
@@ -123,11 +163,17 @@ struct ContentView: View {
             }
         }
         .task(id: selectedTab) {
-            guard selectedTab == .drive, accountRole == .driver else { return }
-            guard await refreshDriverDashboard() else { return }
-            while !Task.isCancelled {
-                guard await pollDriverDashboard() else { return }
-                try? await Task.sleep(for: .seconds(15))
+            if selectedTab == .drive, accountRole == .driver {
+                guard await refreshDriverDashboard() else { return }
+                while !Task.isCancelled {
+                    guard await pollDriverDashboard() else { return }
+                    try? await Task.sleep(for: .seconds(15))
+                }
+            } else if selectedTab == .activity, accountRole == .rider {
+                while !Task.isCancelled {
+                    await refreshRiderDashboard()
+                    try? await Task.sleep(for: .seconds(15))
+                }
             }
         }
         .onChange(of: scenePhase) { _, phase in
@@ -237,6 +283,9 @@ struct ContentView: View {
                     .accessibilityLabel("Map showing current pickup and destination")
 
                 routeFields
+                if sessionToken != nil {
+                    savedPlaceActions
+                }
                 ridePicker
             }
             .padding(.horizontal, 20)
@@ -333,7 +382,10 @@ struct ContentView: View {
                     .font(.system(size: 17, weight: .bold, design: .rounded))
                     .foregroundStyle(TrypsStyle.ink)
                 Spacer()
-                Label("Today · now", systemImage: "clock")
+                Label(
+                    scheduleForLater ? scheduledPickup.formatted(date: .abbreviated, time: .shortened) : "Today · now",
+                    systemImage: "clock"
+                )
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(TrypsStyle.muted)
             }
@@ -348,6 +400,20 @@ struct ContentView: View {
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(ride.id == selectedRideID ? .isSelected : [])
                 }
+            }
+
+            Toggle("Schedule this ride", isOn: $scheduleForLater)
+                .font(.system(size: 14, weight: .medium))
+                .tint(TrypsStyle.accent)
+            if scheduleForLater {
+                DatePicker(
+                    "Pickup time",
+                    selection: $scheduledPickup,
+                    in: Date.now.addingTimeInterval(16 * 60)...Date.now.addingTimeInterval(30 * 24 * 60 * 60),
+                    displayedComponents: [.date, .hourAndMinute]
+                )
+                .font(.system(size: 13, weight: .medium))
+                .tint(TrypsStyle.accent)
             }
         }
     }
@@ -365,7 +431,34 @@ struct ContentView: View {
                         .foregroundStyle(TrypsStyle.muted)
                 }
 
-                if bookings.isEmpty {
+                if sessionToken != nil {
+                    if cloudRides.isEmpty {
+                        emptyActivityCard
+                    } else {
+                        ForEach(cloudRides) { trip in
+                            TripActivityRow(
+                                trip: trip,
+                                localShareURL: bookings.first(where: { $0.rideID == trip.id })?.shareURL,
+                                onRate: { beginRating(rideID: trip.id, target: "driver") },
+                                onCancel: { Task { await cancelScheduledRide(trip.id) } }
+                            )
+                        }
+                    }
+                } else if bookings.isEmpty {
+                    emptyActivityCard
+                } else {
+                    ForEach(bookings) { booking in
+                        BookingHistoryRow(booking: booking)
+                    }
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 8)
+            .padding(.bottom, 20)
+        }
+    }
+
+    private var emptyActivityCard: some View {
                     VStack(spacing: 12) {
                         Image(systemName: "steeringwheel")
                             .font(.system(size: 28, weight: .medium))
@@ -388,16 +481,26 @@ struct ContentView: View {
                     .padding(.vertical, 36)
                     .padding(.horizontal, 24)
                     .background(.white, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-                } else {
-                    ForEach(bookings) { booking in
-                        BookingHistoryRow(booking: booking)
-                    }
-                }
+    }
+
+    private var savedPlaceActions: some View {
+        HStack {
+            Button {
+                selectedPlaceIsPickup = true
+                isSavedPlacesPresented = true
+            } label: {
+                Label("Pickup saved", systemImage: "bookmark")
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 8)
-            .padding(.bottom, 20)
+            Spacer()
+            Button {
+                selectedPlaceIsPickup = false
+                isSavedPlacesPresented = true
+            } label: {
+                Label("Destination saved", systemImage: "bookmark")
+            }
         }
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(TrypsStyle.accent)
     }
 
     private var tabBar: some View {
@@ -497,11 +600,17 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 10) {
                             Label(ride.pickup, systemImage: "circle.fill")
                             Label(ride.destination, systemImage: "mappin.and.ellipse")
-                            Button("Complete ride") {
-                                Task { await completeDriverRide(ride) }
+                            if ride.status == "confirmed" {
+                                Button("Complete ride") {
+                                    Task { await completeDriverRide(ride) }
+                                }
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(TrypsStyle.accent)
+                            } else if ride.hasRated != true {
+                                Button("Rate rider") { beginRating(rideID: ride.id, target: "rider") }
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(TrypsStyle.accent)
                             }
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(TrypsStyle.accent)
                         }
                         .font(.system(size: 13))
                         .foregroundStyle(TrypsStyle.ink)
@@ -633,6 +742,85 @@ struct ContentView: View {
     }
 
     @MainActor
+    private func refreshRiderDashboard() async {
+        guard let sessionToken, accountRole == .rider else { return }
+        do {
+            cloudRides = try await RideAPI.rides(token: sessionToken)
+            savedPlaces = try await RideAPI.savedPlaces(token: sessionToken)
+            guard pendingPayment == nil else { return }
+            if let unpaid = cloudRides.first(where: {
+                $0.status == "awaiting_payment" && $0.paymentReady
+            }), let trip = try? await RideAPI.ride(token: sessionToken, id: unpaid.id),
+               let clientSecret = trip.paymentIntentClientSecret {
+                let rideName = RideOption.all.first(where: { $0.id == trip.rideType })?.name ?? trip.rideType
+                pendingPayment = PendingPayment(
+                    id: trip.id,
+                    clientSecret: clientSecret,
+                    pickup: trip.pickup,
+                    destination: trip.destination,
+                    rideName: rideName,
+                    fare: String(format: "$%.2f", Double(trip.amountCents) / 100),
+                    shareURL: nil
+                )
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func refreshSavedPlaces() async {
+        guard let sessionToken else { return }
+        do {
+            savedPlaces = try await RideAPI.savedPlaces(token: sessionToken)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func applySavedPlace(_ place: SavedPlace) {
+        let coordinate = CLLocationCoordinate2D(latitude: place.latitude, longitude: place.longitude)
+        if selectedPlaceIsPickup {
+            pickup = place.label
+            resolvedPickupLabel = place.label
+            pickupCoordinate = coordinate
+        } else {
+            destination = place.label
+            resolvedDestinationLabel = place.label
+            destinationCoordinate = coordinate
+        }
+    }
+
+    private func beginRating(rideID: String, target: String) {
+        ratingRideID = rideID
+        ratingTarget = target
+        isRatingPresented = true
+    }
+
+    @MainActor
+    private func submitRating(rideID: String, stars: Int, comment: String, token: String) async {
+        do {
+            try await RideAPI.rateRide(token: token, rideID: rideID, stars: stars, comment: comment)
+            isRatingPresented = false
+            await refreshRiderDashboard()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func cancelScheduledRide(_ rideID: String) async {
+        guard let sessionToken else { return }
+        do {
+            try await RideAPI.cancelRide(token: sessionToken, rideID: rideID)
+            await refreshRiderDashboard()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
     private func requestRide() async {
         let trimmedDestination = destination.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedPickup = pickup.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -652,16 +840,35 @@ struct ContentView: View {
             let request = RideRequest(
                 pickup: RideLocation(label: trimmedPickup, coordinate: pickupCoordinate),
                 destination: RideLocation(label: trimmedDestination, coordinate: destinationCoordinate),
-                rideType: selectedRide.id
+                rideType: selectedRide.id,
+                scheduledAt: scheduleForLater ? ISO8601DateFormatter().string(from: scheduledPickup) : nil
             )
             let response = try await RideAPI.requestRide(token: sessionToken, request: request)
+            if response.status == "scheduled" {
+                modelContext.insert(RideBooking(
+                    pickup: trimmedPickup,
+                    destination: trimmedDestination,
+                    rideName: selectedRide.name,
+                    fare: selectedRide.price,
+                    rideID: response.rideId,
+                    shareURL: response.shareUrl.absoluteString,
+                    status: response.status
+                ))
+                selectedTab = .activity
+                errorMessage = "Ride scheduled for \(scheduledPickup.formatted(date: .abbreviated, time: .shortened)). We’ll find a nearby driver 15 minutes before pickup."
+                return
+            }
+            guard let clientSecret = response.paymentIntentClientSecret else {
+                throw RideAPIError.response
+            }
             pendingPayment = PendingPayment(
                 id: response.rideId,
-                clientSecret: response.paymentIntentClientSecret,
+                clientSecret: clientSecret,
                 pickup: trimmedPickup,
                 destination: trimmedDestination,
                 rideName: selectedRide.name,
-                fare: selectedRide.price
+                fare: selectedRide.price,
+                shareURL: response.shareUrl
             )
         } catch {
             errorMessage = error.localizedDescription
@@ -676,7 +883,10 @@ struct ContentView: View {
                 pickup: payment.pickup,
                 destination: payment.destination,
                 rideName: payment.rideName,
-                fare: payment.fare
+                fare: payment.fare,
+                rideID: payment.id,
+                shareURL: payment.shareURL?.absoluteString,
+                status: "awaiting_payment"
             )
             modelContext.insert(booking)
             receipt = BookingReceipt(
@@ -912,10 +1122,248 @@ private struct BookingHistoryRow: View {
                 Text(booking.requestedAt, format: .dateTime.month(.abbreviated).day().hour().minute())
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(TrypsStyle.muted)
+                if let status = booking.status {
+                    Text(status.capitalized)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(TrypsStyle.accent)
+                }
+                if let shareURL = booking.shareURL.flatMap(URL.init(string:)) {
+                    ShareLink(item: shareURL) {
+                        Label("Share trip", systemImage: "square.and.arrow.up")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .tint(TrypsStyle.accent)
+                }
             }
         }
         .padding(15)
         .background(.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+}
+
+private struct TripActivityRow: View {
+    let trip: TripStatus
+    let localShareURL: String?
+    let onRate: () -> Void
+    let onCancel: () -> Void
+
+    private var driverCoordinate: CLLocationCoordinate2D? {
+        guard let latitude = trip.driverLatitude, let longitude = trip.driverLongitude else { return nil }
+        return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(trip.rideType.replacingOccurrences(of: "-", with: " ").capitalized)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(TrypsStyle.ink)
+                Spacer()
+                Text(trip.status.replacingOccurrences(of: "_", with: " ").capitalized)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(TrypsStyle.accent)
+            }
+            Label(trip.pickup, systemImage: "circle.fill")
+            Label(trip.destination, systemImage: "mappin.and.ellipse")
+            if let scheduledAt = trip.scheduledAt, let date = ISO8601DateFormatter().date(from: scheduledAt) {
+                Label(date.formatted(date: .abbreviated, time: .shortened), systemImage: "clock")
+            }
+            if let coordinate = driverCoordinate, trip.status == "confirmed" {
+                Map {
+                    Annotation("Driver", coordinate: coordinate) {
+                        Image(systemName: "car.fill")
+                            .foregroundStyle(.white)
+                            .padding(9)
+                            .background(TrypsStyle.accent, in: Circle())
+                    }
+                }
+                .mapStyle(.standard)
+                .frame(height: 140)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .accessibilityLabel("Live map showing your driver's last reported location")
+            } else if trip.status == "confirmed" {
+                Label("Driver location is updating", systemImage: "location")
+                    .font(.system(size: 11))
+                    .foregroundStyle(TrypsStyle.muted)
+            }
+            HStack {
+                if let localShareURL = localShareURL.flatMap(URL.init(string:)) {
+                    ShareLink(item: localShareURL) {
+                        Label("Share trip", systemImage: "square.and.arrow.up")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .tint(TrypsStyle.accent)
+                }
+                Spacer()
+                if trip.status == "completed", !trip.hasRated {
+                    Button("Rate driver", action: onRate)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(TrypsStyle.accent)
+                }
+                if trip.status == "scheduled" {
+                    Button("Cancel reservation", action: onCancel)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.red)
+                }
+            }
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(TrypsStyle.muted)
+        .padding(15)
+        .background(.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+}
+
+private struct SavedPlacesSheet: View {
+    let token: String
+    let currentPlace: RideLocation?
+    let defaultName: String
+    let onChoose: (SavedPlace) -> Void
+    let onChange: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var places: [SavedPlace] = []
+    @State private var name = ""
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Saved places") {
+                    if places.isEmpty {
+                        Text("Save home, work, or another frequent stop.")
+                            .foregroundStyle(TrypsStyle.muted)
+                    }
+                    ForEach(places) { place in
+                        Button {
+                            onChoose(place)
+                            dismiss()
+                        } label: {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(place.name).fontWeight(.semibold)
+                                Text(place.label).font(.caption).foregroundStyle(TrypsStyle.muted)
+                            }
+                        }
+                        .tint(TrypsStyle.ink)
+                        .swipeActions {
+                            Button("Delete", role: .destructive) {
+                                Task { await delete(place) }
+                            }
+                        }
+                    }
+                }
+
+                Section("Add a saved place") {
+                    TextField("Name (for example, Home)", text: $name)
+                    if let currentPlace {
+                        Text(currentPlace.label)
+                            .font(.caption)
+                            .foregroundStyle(TrypsStyle.muted)
+                        Button("Save this place") {
+                            Task { await save(currentPlace) }
+                        }
+                        .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    } else {
+                        Text("Choose a pickup or destination on the ride screen first.")
+                            .font(.caption)
+                            .foregroundStyle(TrypsStyle.muted)
+                    }
+                }
+
+                if let errorMessage {
+                    Text(errorMessage).foregroundStyle(.red)
+                }
+            }
+            .navigationTitle("Saved places")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .task {
+                name = defaultName
+                await load()
+            }
+        }
+    }
+
+    @MainActor
+    private func load() async {
+        do {
+            places = try await RideAPI.savedPlaces(token: token)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func delete(_ place: SavedPlace) async {
+        do {
+            try await RideAPI.deleteSavedPlace(token: token, id: place.id)
+            places.removeAll { $0.id == place.id }
+            onChange()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func save(_ location: RideLocation) async {
+        do {
+            _ = try await RideAPI.savePlace(
+                token: token,
+                name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                location: location
+            )
+            onChange()
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+private struct RatingSheet: View {
+    let target: String
+    let onSubmit: (Int, String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var stars = 5
+    @State private var comment = ""
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Text("Rate your \(target)")
+                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .foregroundStyle(TrypsStyle.ink)
+            HStack(spacing: 10) {
+                ForEach(1...5, id: \.self) { value in
+                    Button {
+                        stars = value
+                    } label: {
+                        Image(systemName: value <= stars ? "star.fill" : "star")
+                            .font(.system(size: 27))
+                            .foregroundStyle(Color.orange)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(value) stars")
+                }
+            }
+            TextField("Add a comment (optional)", text: $comment, axis: .vertical)
+                .lineLimit(2...4)
+                .textFieldStyle(.roundedBorder)
+            Button("Submit rating") {
+                onSubmit(stars, comment)
+            }
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .frame(height: 50)
+            .background(TrypsStyle.accent, in: RoundedRectangle(cornerRadius: 15))
+        }
+        .padding(24)
+        .padding(.top, 12)
     }
 }
 

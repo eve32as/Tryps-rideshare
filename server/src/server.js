@@ -3,7 +3,7 @@ import { rateLimit } from "express-rate-limit";
 import pg from "pg";
 import Stripe from "stripe";
 import { createRemoteJWKSet, jwtVerify, SignJWT } from "jose";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readConfig } from "./config.js";
 import { getRidePrice, isValidLocation } from "./validation.js";
 
@@ -90,6 +90,16 @@ function validateLocationPair(body) {
   return isValidLocation(body?.pickup) && isValidLocation(body?.destination);
 }
 
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;",
+    "'": "&#39;",
+  })[character]);
+}
+
 async function authenticate(req, res, next) {
   const authHeader = req.header("authorization") ?? "";
   const [scheme, token, ...extra] = authHeader.split(" ");
@@ -120,6 +130,46 @@ function requireRole(role) {
 }
 
 app.get("/v1/health", (_req, res) => res.json({ status: "ok" }));
+
+app.get("/v1/shared-trips/:token", asyncRoute(async (req, res) => {
+  const token = req.params.token;
+  if (typeof token !== "string" || !/^[A-Za-z0-9_-]{40,60}$/.test(token)) {
+    return res.status(404).json({ error: "Shared trip not found." });
+  }
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  const result = await pool.query(
+    `SELECT r.id, r.pickup_label AS pickup, r.destination_label AS destination,
+            r.status, r.scheduled_at AS "scheduledAt", r.created_at AS "createdAt",
+            ST_Y(d.location::geometry) AS "driverLatitude",
+            ST_X(d.location::geometry) AS "driverLongitude"
+     FROM rides r
+     LEFT JOIN drivers d ON d.user_id = r.driver_user_id
+     WHERE r.share_token_hash = $1
+       AND r.status <> 'cancelled'
+       AND COALESCE(r.completed_at, r.scheduled_at, r.created_at) > now() - interval '24 hours'`,
+    [tokenHash],
+  );
+  if (!result.rowCount) return res.status(404).json({ error: "Shared trip not found or expired." });
+  if (req.get("accept")?.includes("text/html") && req.accepts("html")) {
+    const trip = result.rows[0];
+    const driverLink = Number.isFinite(trip.driverLatitude) && Number.isFinite(trip.driverLongitude)
+      ? `<p><a href="https://maps.apple.com/?ll=${trip.driverLatitude},${trip.driverLongitude}&amp;q=Driver">View driver's latest location</a></p>`
+      : "";
+    res.set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline';");
+    res.set("Referrer-Policy", "no-referrer");
+    return res.type("html").send(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="15"><title>Shared Tryps ride</title>
+<style>body{font:16px -apple-system,BlinkMacSystemFont,sans-serif;background:#f4f6f2;color:#18312a;margin:0;padding:24px}
+main{max-width:520px;margin:8vh auto;background:white;padding:28px;border-radius:20px;box-shadow:0 8px 30px #18312a12}
+h1{font-size:24px}.status{color:#28705f;font-weight:700}p{line-height:1.5}a{color:#28705f}</style></head>
+<body><main><h1>Tryps ride</h1><p class="status">${escapeHtml(trip.status.replaceAll("_", " "))}</p>
+<p><strong>Pickup:</strong> ${escapeHtml(trip.pickup)}</p><p><strong>Destination:</strong> ${escapeHtml(trip.destination)}</p>
+${trip.scheduledAt ? `<p><strong>Scheduled:</strong> ${escapeHtml(new Date(trip.scheduledAt).toLocaleString())}</p>` : ""}
+${driverLink}<p>This page refreshes every 15 seconds with the latest trip status.</p></main></body></html>`);
+  }
+  return res.json(result.rows[0]);
+}));
 
 app.post("/v1/auth/apple", asyncRoute(async (req, res) => {
   const identityToken = req.body?.identityToken;
@@ -279,10 +329,12 @@ app.patch("/v1/driver/availability", authenticate, requireRole("driver"), asyncR
 app.get("/v1/driver/rides", authenticate, requireRole("driver"), asyncRoute(async (req, res) => {
   const result = await pool.query(
     `SELECT id, pickup_label AS pickup, destination_label AS destination, ride_type AS "rideType",
-            status, created_at AS "createdAt"
+            status, created_at AS "createdAt",
+            EXISTS (SELECT 1 FROM ride_ratings rr WHERE rr.ride_id = rides.id AND rr.rater_user_id = $1) AS "hasRated"
      FROM rides
-     WHERE driver_user_id = $1 AND status = 'confirmed'
-     ORDER BY created_at ASC`,
+     WHERE driver_user_id = $1 AND status IN ('confirmed', 'completed')
+     ORDER BY (status = 'confirmed') DESC, created_at DESC
+     LIMIT 50`,
     [req.user.id],
   );
   return res.json({ rides: result.rows });
@@ -290,7 +342,7 @@ app.get("/v1/driver/rides", authenticate, requireRole("driver"), asyncRoute(asyn
 
 app.post("/v1/driver/rides/:rideId/complete", authenticate, requireRole("driver"), asyncRoute(async (req, res) => {
   const result = await pool.query(
-    `UPDATE rides SET status = 'completed'
+    `UPDATE rides SET status = 'completed', completed_at = now()
      WHERE id = $1 AND driver_user_id = $2 AND status = 'confirmed'
      RETURNING id`,
     [req.params.rideId, req.user.id],
@@ -304,13 +356,51 @@ app.post("/v1/driver/rides/:rideId/complete", authenticate, requireRole("driver"
 }));
 
 app.post("/v1/rides", authenticate, requireRole("rider"), asyncRoute(async (req, res) => {
-  const { pickup, destination, rideType } = req.body ?? {};
+  const { pickup, destination, rideType, scheduledAt } = req.body ?? {};
   const amountCents = getRidePrice(rideType, config.ridePrices);
   if (!validateLocationPair(req.body) || amountCents === undefined) {
     return res.status(400).json({ error: "Valid pickup, destination, and ride type are required." });
   }
 
   const rideId = randomUUID();
+  const shareToken = randomBytes(32).toString("base64url");
+  const shareTokenHash = createHash("sha256").update(shareToken).digest("hex");
+  const shareUrl = `${config.tripShareBaseUrl}/${shareToken}`;
+  const requestedPickupTime = scheduledAt == null ? null : new Date(scheduledAt);
+  if (scheduledAt != null && (
+    typeof scheduledAt !== "string" ||
+    Number.isNaN(requestedPickupTime.getTime()) ||
+    requestedPickupTime.getTime() < Date.now() + 15 * 60_000 ||
+    requestedPickupTime.getTime() > Date.now() + 30 * 24 * 60 * 60_000
+  )) {
+    return res.status(400).json({ error: "Scheduled pickups must be 15 minutes to 30 days in the future." });
+  }
+
+  if (requestedPickupTime) {
+    await pool.query(
+      `INSERT INTO rides (
+        id, rider_user_id, pickup_label, pickup, destination_label, destination,
+        ride_type, amount_cents, currency, status, scheduled_at, share_token_hash
+      ) VALUES (
+        $1, $2, $3, ST_SetSRID(ST_MakePoint($4, $5), 4326)::geography,
+        $6, ST_SetSRID(ST_MakePoint($7, $8), 4326)::geography, $9, $10, $11, 'scheduled', $12, $13
+      )`,
+      [
+        rideId, req.user.id, pickup.label.trim(), pickup.longitude, pickup.latitude,
+        destination.label.trim(), destination.longitude, destination.latitude,
+        rideType, amountCents, config.currency, requestedPickupTime.toISOString(), shareTokenHash,
+      ],
+    );
+    return res.status(201).json({
+      rideId,
+      status: "scheduled",
+      scheduledAt: requestedPickupTime.toISOString(),
+      amountCents,
+      currency: config.currency,
+      shareUrl,
+    });
+  }
+
   const client = await pool.connect();
   let transactionOpen = false;
   let paymentIntentId;
@@ -365,15 +455,15 @@ app.post("/v1/rides", authenticate, requireRole("rider"), asyncRoute(async (req,
     await client.query(
       `INSERT INTO rides (
         id, rider_user_id, driver_user_id, pickup_label, pickup, destination_label, destination,
-        ride_type, amount_cents, currency, payment_intent_id, status
+        ride_type, amount_cents, currency, payment_intent_id, status, payment_created_at, share_token_hash
       ) VALUES (
         $1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5, $6), 4326)::geography,
-        $7, ST_SetSRID(ST_MakePoint($8, $9), 4326)::geography, $10, $11, $12, $13, 'awaiting_payment'
+        $7, ST_SetSRID(ST_MakePoint($8, $9), 4326)::geography, $10, $11, $12, $13, 'awaiting_payment', now(), $14
       )`,
       [
         rideId, req.user.id, driver.user_id, pickup.label.trim(), pickup.longitude, pickup.latitude,
         destination.label.trim(), destination.longitude, destination.latitude,
-        rideType, amountCents, config.currency, paymentIntent.id,
+        rideType, amountCents, config.currency, paymentIntent.id, shareTokenHash,
       ],
     );
     await client.query("UPDATE drivers SET available = false, updated_at = now() WHERE user_id = $1", [driver.user_id]);
@@ -386,6 +476,7 @@ app.post("/v1/rides", authenticate, requireRole("rider"), asyncRoute(async (req,
       paymentIntentClientSecret: paymentIntent.client_secret,
       amountCents,
       currency: config.currency,
+      shareUrl,
     });
   } catch (error) {
     if (transactionOpen) await client.query("ROLLBACK").catch(() => {});
@@ -402,11 +493,18 @@ app.post("/v1/rides", authenticate, requireRole("rider"), asyncRoute(async (req,
 
 app.delete("/v1/rides/:rideId", authenticate, requireRole("rider"), asyncRoute(async (req, res) => {
   const result = await pool.query(
-    `SELECT payment_intent_id FROM rides
-     WHERE id = $1 AND rider_user_id = $2 AND status = 'awaiting_payment'`,
+    `SELECT payment_intent_id, status FROM rides
+     WHERE id = $1 AND rider_user_id = $2 AND status IN ('scheduled', 'awaiting_payment')`,
     [req.params.rideId, req.user.id],
   );
   if (!result.rowCount) return res.status(404).json({ error: "Pending ride not found." });
+  if (result.rows[0].status === "scheduled") {
+    await pool.query(
+      "UPDATE rides SET status = 'cancelled' WHERE id = $1 AND rider_user_id = $2 AND status = 'scheduled'",
+      [req.params.rideId, req.user.id],
+    );
+    return res.json({ cancelled: true });
+  }
   try {
     await stripe.paymentIntents.cancel(result.rows[0].payment_intent_id);
   } catch {
@@ -437,13 +535,212 @@ app.delete("/v1/rides/:rideId", authenticate, requireRole("rider"), asyncRoute(a
 app.get("/v1/rides/:rideId", authenticate, requireRole("rider"), asyncRoute(async (req, res) => {
   const result = await pool.query(
     `SELECT id, pickup_label AS pickup, destination_label AS destination, ride_type AS "rideType",
-            amount_cents AS "amountCents", currency, status, created_at AS "createdAt"
-     FROM rides WHERE id = $1 AND rider_user_id = $2`,
+            amount_cents AS "amountCents", currency, status, scheduled_at AS "scheduledAt",
+            created_at AS "createdAt", payment_intent_id IS NOT NULL AS "paymentReady",
+            ST_Y(d.location::geometry) AS "driverLatitude",
+            ST_X(d.location::geometry) AS "driverLongitude",
+            EXISTS (SELECT 1 FROM ride_ratings rr WHERE rr.ride_id = rides.id AND rr.rater_user_id = $2) AS "hasRated"
+     FROM rides LEFT JOIN drivers d ON d.user_id = rides.driver_user_id
+     WHERE rides.id = $1 AND rider_user_id = $2`,
     [req.params.rideId, req.user.id],
   );
   if (!result.rowCount) return res.status(404).json({ error: "Ride not found." });
-  return res.json(result.rows[0]);
+  const ride = result.rows[0];
+  if (ride.status === "awaiting_payment" && ride.paymentReady) {
+    const paymentIntent = await pool.query("SELECT payment_intent_id FROM rides WHERE id = $1", [req.params.rideId]);
+    const intent = await stripe.paymentIntents.retrieve(paymentIntent.rows[0].payment_intent_id);
+    ride.paymentIntentClientSecret = intent.client_secret;
+  }
+  return res.json(ride);
 }));
+
+app.get("/v1/rides", authenticate, requireRole("rider"), asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT id, pickup_label AS pickup, destination_label AS destination,
+            ride_type AS "rideType", amount_cents AS "amountCents", currency, status,
+            scheduled_at AS "scheduledAt", created_at AS "createdAt",
+            payment_intent_id IS NOT NULL AS "paymentReady",
+            ST_Y(d.location::geometry) AS "driverLatitude",
+            ST_X(d.location::geometry) AS "driverLongitude",
+            EXISTS (SELECT 1 FROM ride_ratings rr WHERE rr.ride_id = rides.id AND rr.rater_user_id = $1) AS "hasRated"
+     FROM rides LEFT JOIN drivers d ON d.user_id = rides.driver_user_id
+     WHERE rides.rider_user_id = $1
+     ORDER BY COALESCE(scheduled_at, created_at) DESC
+     LIMIT 100`,
+    [req.user.id],
+  );
+  return res.json({ rides: result.rows });
+}));
+
+app.post("/v1/rides/:rideId/ratings", authenticate, asyncRoute(async (req, res) => {
+  const { stars, comment = "" } = req.body ?? {};
+  if (!Number.isInteger(stars) || stars < 1 || stars > 5 ||
+      typeof comment !== "string" || comment.length > 500) {
+    return res.status(400).json({ error: "Provide a 1–5 star rating and a comment under 500 characters." });
+  }
+  const ride = await pool.query(
+    `SELECT rider_user_id, driver_user_id, status
+     FROM rides
+     WHERE id = $1 AND (rider_user_id = $2 OR driver_user_id = $2)`,
+    [req.params.rideId, req.user.id],
+  );
+  if (!ride.rowCount) return res.status(404).json({ error: "Ride not found." });
+  if (ride.rows[0].status !== "completed") {
+    return res.status(409).json({ error: "Rides can only be rated after completion." });
+  }
+  const ratedUserId = req.user.id === ride.rows[0].rider_user_id
+    ? ride.rows[0].driver_user_id
+    : ride.rows[0].rider_user_id;
+  try {
+    await pool.query(
+      `INSERT INTO ride_ratings (id, ride_id, rater_user_id, rated_user_id, stars, comment)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [randomUUID(), req.params.rideId, req.user.id, ratedUserId, stars, comment.trim()],
+    );
+  } catch (error) {
+    if (error.code === "23505") return res.status(409).json({ error: "You have already rated this ride." });
+    throw error;
+  }
+  return res.status(201).json({ rated: true });
+}));
+
+app.get("/v1/saved-places", authenticate, requireRole("rider"), asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT id, name, label, ST_Y(location::geometry) AS latitude, ST_X(location::geometry) AS longitude
+     FROM saved_places WHERE user_id = $1 ORDER BY created_at LIMIT 50`,
+    [req.user.id],
+  );
+  return res.json({ places: result.rows });
+}));
+
+app.post("/v1/saved-places", authenticate, requireRole("rider"), asyncRoute(async (req, res) => {
+  const { name, location } = req.body ?? {};
+  if (!validText(name, 60) || !isValidLocation(location)) {
+    return res.status(400).json({ error: "Provide a name and valid place location." });
+  }
+  try {
+    const result = await pool.query(
+      `INSERT INTO saved_places (id, user_id, name, label, location)
+       VALUES ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5, $6), 4326)::geography)
+       RETURNING id, name, label, ST_Y(location::geometry) AS latitude, ST_X(location::geometry) AS longitude`,
+      [randomUUID(), req.user.id, name.trim(), location.label.trim(), location.longitude, location.latitude],
+    );
+    return res.status(201).json(result.rows[0]);
+  } catch (error) {
+    if (error.code === "23505") return res.status(409).json({ error: "A saved place already uses that name." });
+    throw error;
+  }
+}));
+
+app.delete("/v1/saved-places/:placeId", authenticate, requireRole("rider"), asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    "DELETE FROM saved_places WHERE id = $1 AND user_id = $2 RETURNING id",
+    [req.params.placeId, req.user.id],
+  );
+  if (!result.rowCount) return res.status(404).json({ error: "Saved place not found." });
+  return res.json({ deleted: true });
+}));
+
+async function dispatchScheduledRides() {
+  const client = await pool.connect();
+  let transactionOpen = false;
+  let driverId;
+  try {
+    await client.query("BEGIN");
+    transactionOpen = true;
+    const scheduled = await client.query(
+      `SELECT id, ST_X(pickup::geometry) AS longitude, ST_Y(pickup::geometry) AS latitude,
+              ride_type, amount_cents, currency
+       FROM rides
+       WHERE status = 'scheduled'
+         AND scheduled_at <= now() + ($1::double precision * interval '1 minute')
+         AND scheduled_at >= now() - interval '15 minutes'
+       ORDER BY scheduled_at
+       LIMIT 5
+       FOR UPDATE SKIP LOCKED`,
+      [config.scheduledDispatchLeadMinutes],
+    );
+    await client.query(
+      `UPDATE rides SET status = 'cancelled'
+       WHERE status = 'scheduled' AND scheduled_at < now() - interval '15 minutes'`,
+    );
+
+    for (const ride of scheduled.rows) {
+      const driverResult = await client.query(
+        `SELECT user_id, stripe_account_id
+         FROM drivers d
+         WHERE available = true
+           AND location IS NOT NULL
+           AND updated_at > now() - ($4::double precision * interval '1 second')
+           AND NOT EXISTS (
+             SELECT 1 FROM rides r
+             WHERE r.driver_user_id = d.user_id AND r.status IN ('awaiting_payment', 'confirmed')
+           )
+           AND ST_DWithin(
+             location,
+             ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
+             $3
+           )
+         ORDER BY location <-> ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography
+         LIMIT 1
+         FOR UPDATE OF d SKIP LOCKED`,
+        [
+          ride.longitude,
+          ride.latitude,
+          config.matchingRadiusMeters,
+          config.driverHeartbeatTimeoutSeconds,
+        ],
+      );
+      const driver = driverResult.rows[0];
+      if (!driver) continue;
+      driverId = driver.user_id;
+      const account = await stripe.accounts.retrieve(driver.stripe_account_id);
+      if (!account.details_submitted || !account.payouts_enabled) {
+        await client.query("UPDATE drivers SET available = false WHERE user_id = $1", [driverId]);
+        driverId = undefined;
+        continue;
+      }
+
+      const applicationFeeAmount = Math.floor(ride.amount_cents * config.applicationFeeBasisPoints / 10000);
+      const paymentIntent = await stripe.paymentIntents.create(
+        {
+          amount: ride.amount_cents,
+          currency: ride.currency,
+          automatic_payment_methods: { enabled: true },
+          application_fee_amount: applicationFeeAmount,
+          transfer_data: { destination: driver.stripe_account_id },
+          metadata: { rideId: ride.id },
+        },
+        { idempotencyKey: `ride-payment-${ride.id}` },
+      );
+      await client.query(
+        `UPDATE rides
+         SET driver_user_id = $2, payment_intent_id = $3, payment_created_at = now(), status = 'awaiting_payment'
+         WHERE id = $1 AND status = 'scheduled'`,
+        [ride.id, driverId, paymentIntent.id],
+      );
+      await client.query("UPDATE drivers SET available = false, updated_at = now() WHERE user_id = $1", [driverId]);
+      driverId = undefined;
+    }
+    await client.query("COMMIT");
+    transactionOpen = false;
+  } catch (error) {
+    if (transactionOpen) await client.query("ROLLBACK").catch(() => {});
+    if (driverId) {
+      await pool.query(
+        `UPDATE drivers SET available = true
+         WHERE user_id = $1
+           AND NOT EXISTS (
+             SELECT 1 FROM rides WHERE driver_user_id = $1 AND status IN ('awaiting_payment', 'confirmed')
+           )`,
+        [driverId],
+      ).catch(() => {});
+    }
+    console.error("Could not dispatch scheduled rides:", error);
+  } finally {
+    client.release();
+  }
+}
 
 async function expireUnpaidRideReservations() {
   const client = await pool.connect();
@@ -455,8 +752,8 @@ async function expireUnpaidRideReservations() {
       `SELECT id, driver_user_id, payment_intent_id
        FROM rides
        WHERE status = 'awaiting_payment'
-         AND created_at < now() - ($1::double precision * interval '1 minute')
-       ORDER BY created_at
+         AND payment_created_at < now() - ($1::double precision * interval '1 minute')
+       ORDER BY payment_created_at
        LIMIT 20
        FOR UPDATE SKIP LOCKED`,
       [config.paymentReservationMinutes],
@@ -507,6 +804,8 @@ async function expireUnpaidRideReservations() {
 
 const reservationCleanup = setInterval(expireUnpaidRideReservations, 60_000);
 reservationCleanup.unref();
+const scheduledRideDispatch = setInterval(dispatchScheduledRides, 60_000);
+scheduledRideDispatch.unref();
 
 app.use((error, _req, res, _next) => {
   console.error("API request failed:", error);
@@ -520,6 +819,7 @@ const server = app.listen(config.port, () => {
 
 async function shutdown() {
   clearInterval(reservationCleanup);
+  clearInterval(scheduledRideDispatch);
   server.close();
   await pool.end();
 }

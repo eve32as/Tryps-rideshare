@@ -12,6 +12,7 @@ const validEnvironment = {
   STRIPE_CONNECT_COUNTRY: "US",
   DRIVER_ONBOARDING_RETURN_URL: "https://tryps.app/return",
   DRIVER_ONBOARDING_REFRESH_URL: "https://tryps.app/refresh",
+  TRIP_SHARE_BASE_URL: "https://tryps.app/trip",
   PLATFORM_FEE_BPS: "2000",
 };
 
@@ -54,6 +55,10 @@ test("rejects placeholder or insecure driver onboarding URLs", () => {
       ...validEnvironment,
       DRIVER_ONBOARDING_REFRESH_URL: "https://tryps.invalid/refresh",
     }),
+    /real HTTPS URL/,
+  );
+  assert.throws(
+    () => readConfig({ ...validEnvironment, TRIP_SHARE_BASE_URL: "http://tryps.app/trip" }),
     /real HTTPS URL/,
   );
 });

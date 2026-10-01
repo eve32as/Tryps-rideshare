@@ -1,8 +1,8 @@
 # Tryps Rideshare
 
-Tryps is a SwiftUI rideshare prototype with MapKit place search and directions,
-current-location pickup, Sign in with Apple, driver matching, and Stripe
-Connect/PaymentSheet integration.
+Tryps is a SwiftUI iOS rideshare prototype with MapKit place search and directions,
+current-location pickup, Sign in with Apple, driver matching, scheduled rides,
+driver location sharing, saved places, ratings, and Stripe Connect/PaymentSheet.
 
 ## iOS app
 
@@ -29,6 +29,7 @@ set -a
 set +a
 npm ci
 psql "$DATABASE_URL" -f migrations/001_initial.sql
+psql "$DATABASE_URL" -f migrations/002_advanced_features.sql
 npm test
 npm start
 ```
@@ -55,9 +56,19 @@ The server selects the nearest online, onboarded driver within 10 km and
 reserves that driver for the ride. The driver screen sends a heartbeat and polls
 for assigned rides while open; drivers without a heartbeat for 2 minutes are
 taken offline automatically. Unpaid ride reservations expire after 20 minutes. Push
-notifications, driver identity/safety verification, trip tracking, server-side
+notifications, driver identity/safety verification, background trip tracking, server-side
 ride-history sync, cancellations/refunds after payment, and fare calculation
-from route distance are not implemented. The fixed sample fare is charged when
-the rider confirms payment; the example fee/currency are not production pricing.
-Configure Stripe in test mode first and complete operational, legal, safety,
-privacy, and payment testing before accepting live rides or charges.
+from route distance are not implemented. Scheduled rides are dispatched within
+15 minutes of pickup; the rider must open Activity to complete payment once a
+driver is matched. The driver app must remain active and online to provide fresh
+location updates. The rider Activity screen polls while open, and trip-share
+pages refresh every 15 seconds. Configure `TRIP_SHARE_BASE_URL` as the public
+HTTPS URL ending in `/v1/shared-trips`; share tokens grant access to trip
+status and the driver's latest location and expire 24 hours after the trip's
+scheduled, completed, or created time. Ratings are one per participant and only
+available after completion; saved places are private to the signed-in rider.
+
+The fixed sample fare is charged when the rider confirms payment; the example
+fee/currency are not production pricing. Configure Stripe in test mode first and
+complete operational, legal, safety, privacy, and payment testing before
+accepting live rides or charges.

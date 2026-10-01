@@ -7,6 +7,7 @@ const required = [
   "STRIPE_CONNECT_COUNTRY",
   "DRIVER_ONBOARDING_RETURN_URL",
   "DRIVER_ONBOARDING_REFRESH_URL",
+  "TRIP_SHARE_BASE_URL",
   "PLATFORM_FEE_BPS",
 ];
 
@@ -26,7 +27,7 @@ export function readConfig(env = process.env) {
   if (currency !== "usd") {
     throw new Error("The current sample fares support USD only.");
   }
-  for (const name of ["DRIVER_ONBOARDING_RETURN_URL", "DRIVER_ONBOARDING_REFRESH_URL"]) {
+  for (const name of ["DRIVER_ONBOARDING_RETURN_URL", "DRIVER_ONBOARDING_REFRESH_URL", "TRIP_SHARE_BASE_URL"]) {
     let url;
     try {
       url = new URL(env[name]);
@@ -51,6 +52,7 @@ export function readConfig(env = process.env) {
     stripeConnectCountry: env.STRIPE_CONNECT_COUNTRY,
     driverOnboardingReturnUrl: env.DRIVER_ONBOARDING_RETURN_URL,
     driverOnboardingRefreshUrl: env.DRIVER_ONBOARDING_REFRESH_URL,
+    tripShareBaseUrl: env.TRIP_SHARE_BASE_URL.replace(/\/+$/, ""),
     port,
     ridePrices: {
       "tryps-go": 1250,
@@ -61,6 +63,7 @@ export function readConfig(env = process.env) {
     matchingRadiusMeters: 10000,
     paymentReservationMinutes: 20,
     driverHeartbeatTimeoutSeconds: 120,
+    scheduledDispatchLeadMinutes: 15,
     currency,
   };
 }

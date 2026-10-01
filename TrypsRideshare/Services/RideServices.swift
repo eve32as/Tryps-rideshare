@@ -24,6 +24,7 @@ struct DriverRide: Decodable, Identifiable {
     let destination: String
     let rideType: String
     let status: String
+    let hasRated: Bool?
 }
 
 struct SignedInSession {
@@ -34,6 +35,49 @@ struct SignedInSession {
 struct DriverProfile: Decodable {
     let onboardingComplete: Bool
     let available: Bool
+}
+
+struct SavedPlace: Codable, Identifiable {
+    let id: String
+    let name: String
+    let label: String
+    let latitude: Double
+    let longitude: Double
+}
+
+struct TripStatus: Decodable, Identifiable {
+    let id: String
+    let pickup: String
+    let destination: String
+    let rideType: String
+    let amountCents: Int
+    let currency: String
+    let status: String
+    let scheduledAt: String?
+    let createdAt: String
+    let paymentReady: Bool
+    let paymentIntentClientSecret: String?
+    let driverLatitude: Double?
+    let driverLongitude: Double?
+    let hasRated: Bool
+}
+
+struct TripShare: Decodable {
+    let rideId: String
+    let status: String
+    let scheduledAt: String?
+    let amountCents: Int
+    let currency: String
+    let paymentIntentClientSecret: String?
+    let shareUrl: URL
+}
+
+private struct RideListResponse: Decodable {
+    let rides: [TripStatus]
+}
+
+private struct SavedPlacesResponse: Decodable {
+    let places: [SavedPlace]
 }
 
 struct RideLocation: Encodable {
@@ -52,14 +96,16 @@ struct RideRequest: Encodable {
     let pickup: RideLocation
     let destination: RideLocation
     let rideType: String
+    let scheduledAt: String?
 }
 
 struct RideRequestResponse: Decodable {
     let rideId: String
     let status: String
-    let paymentIntentClientSecret: String
+    let paymentIntentClientSecret: String?
     let amountCents: Int
     let currency: String
+    let shareUrl: URL
 }
 
 struct PendingPayment: Identifiable {
@@ -69,6 +115,7 @@ struct PendingPayment: Identifiable {
     let destination: String
     let rideName: String
     let fare: String
+    let shareURL: URL?
 }
 
 enum RideAPIError: LocalizedError {
@@ -112,6 +159,37 @@ enum RideAPI {
 
     static func requestRide(token: String, request: RideRequest) async throws -> RideRequestResponse {
         try await send("/v1/rides", method: "POST", body: request, token: token)
+    }
+
+    static func rides(token: String) async throws -> [TripStatus] {
+        let response: RideListResponse = try await send("/v1/rides", method: "GET", token: token)
+        return response.rides
+    }
+
+    static func ride(token: String, id: String) async throws -> TripStatus {
+        try await send("/v1/rides/\(id)", method: "GET", token: token)
+    }
+
+    static func rateRide(token: String, rideID: String, stars: Int, comment: String) async throws {
+        let _: RatingResponse = try await send(
+            "/v1/rides/\(rideID)/ratings",
+            method: "POST",
+            body: RatingRequest(stars: stars, comment: comment),
+            token: token
+        )
+    }
+
+    static func savedPlaces(token: String) async throws -> [SavedPlace] {
+        let response: SavedPlacesResponse = try await send("/v1/saved-places", method: "GET", token: token)
+        return response.places
+    }
+
+    static func savePlace(token: String, name: String, location: RideLocation) async throws -> SavedPlace {
+        try await send("/v1/saved-places", method: "POST", body: SavePlaceRequest(name: name, location: location), token: token)
+    }
+
+    static func deleteSavedPlace(token: String, id: String) async throws {
+        let _: DeletedPlaceResponse = try await send("/v1/saved-places/\(id)", method: "DELETE", token: token)
     }
 
     static func cancelRide(token: String, rideID: String) async throws {
@@ -242,6 +320,24 @@ private struct APIErrorResponse: Decodable {
 
 private struct CancellationResponse: Decodable {
     let cancelled: Bool
+}
+
+private struct RatingRequest: Encodable {
+    let stars: Int
+    let comment: String
+}
+
+private struct RatingResponse: Decodable {
+    let rated: Bool
+}
+
+private struct SavePlaceRequest: Encodable {
+    let name: String
+    let location: RideLocation
+}
+
+private struct DeletedPlaceResponse: Decodable {
+    let deleted: Bool
 }
 
 private struct DriverOnboardingResponse: Decodable {
