@@ -23,6 +23,8 @@ private final class FirebaseDriverStore: ObservableObject {
     @Published private(set) var isAvailable = false
     @Published private(set) var acceptsWomenAndMinorsRides = false
     @Published private(set) var ecoFriendlyVehicle = false
+    @Published private(set) var womenAndMinorsEligibilityApproved = false
+    @Published private(set) var preferenceReviewPending = false
     @Published private(set) var preferencesLoaded = false
     @Published private(set) var isWorking = false
     @Published var errorMessage: String?
@@ -47,7 +49,12 @@ private final class FirebaseDriverStore: ObservableObject {
             .document(userID)
             .addSnapshotListener { [weak self] snapshot, _ in
                 let submitted = snapshot?.exists == true
-                Task { @MainActor in self?.applicationSubmitted = submitted }
+                let reviewPending = snapshot?.data()?["preferenceReviewOnly"] as? Bool == true &&
+                    snapshot?.data()?["status"] as? String == "pending_review"
+                Task { @MainActor in
+                    self?.applicationSubmitted = submitted
+                    self?.preferenceReviewPending = reviewPending
+                }
             }
 
         guard isDriver else { return }
@@ -57,10 +64,13 @@ private final class FirebaseDriverStore: ObservableObject {
                 let available = data?["available"] as? Bool ?? false
                 let acceptsWomenAndMinorsRides = data?["acceptsWomenAndMinorsRides"] as? Bool ?? false
                 let ecoFriendlyVehicle = data?["ecoFriendlyVehicle"] as? Bool ?? false
+                let womenAndMinorsEligibilityApproved =
+                    data?["womenAndMinorsEligibilityApproved"] as? Bool ?? false
                 Task { @MainActor in
                     self?.isAvailable = available
                     self?.acceptsWomenAndMinorsRides = acceptsWomenAndMinorsRides
                     self?.ecoFriendlyVehicle = ecoFriendlyVehicle
+                    self?.womenAndMinorsEligibilityApproved = womenAndMinorsEligibilityApproved
                     self?.preferencesLoaded = snapshot?.exists == true
                 }
             }
@@ -146,6 +156,8 @@ private final class FirebaseDriverStore: ObservableObject {
         isAvailable = false
         acceptsWomenAndMinorsRides = false
         ecoFriendlyVehicle = false
+        womenAndMinorsEligibilityApproved = false
+        preferenceReviewPending = false
         preferencesLoaded = false
     }
 
@@ -206,6 +218,18 @@ private final class FirebaseDriverStore: ObservableObject {
             self.ecoFriendlyVehicle = ecoFriendlyVehicle
         } catch {
             errorMessage = "Couldn’t update your ride preferences."
+        }
+    }
+
+    func requestWomenAndMinorsEligibilityReview() async {
+        isWorking = true
+        errorMessage = nil
+        defer { isWorking = false }
+        do {
+            _ = try await call("requestWomenAndMinorsEligibilityReview", data: [:])
+            preferenceReviewPending = true
+        } catch {
+            errorMessage = "Couldn’t request the eligibility review."
         }
     }
 
@@ -469,18 +493,30 @@ struct FirebaseDriverView: View {
                 Text("RIDE PREFERENCES")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(TrypsStyle.muted)
-                Toggle(isOn: Binding(
-                    get: { driver.acceptsWomenAndMinorsRides },
-                    set: { value in
-                        Task {
-                            await driver.setRidePreferences(
-                                acceptsWomenAndMinorsRides: value,
-                                ecoFriendlyVehicle: driver.ecoFriendlyVehicle
-                            )
+                if driver.womenAndMinorsEligibilityApproved {
+                    Toggle(isOn: Binding(
+                        get: { driver.acceptsWomenAndMinorsRides },
+                        set: { value in
+                            Task {
+                                await driver.setRidePreferences(
+                                    acceptsWomenAndMinorsRides: value,
+                                    ecoFriendlyVehicle: driver.ecoFriendlyVehicle
+                                )
+                            }
                         }
+                    )) {
+                        Text("Opt in to women and minors requests")
                     }
-                )) {
-                    Text("Opt in to women and minors requests")
+                } else {
+                    Button(
+                        driver.preferenceReviewPending
+                            ? "Eligibility review requested"
+                            : "Request women/minors eligibility review"
+                    ) {
+                        Task { await driver.requestWomenAndMinorsEligibilityReview() }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(driver.preferenceReviewPending || driver.isWorking)
                 }
                 Toggle(isOn: Binding(
                     get: { driver.ecoFriendlyVehicle },

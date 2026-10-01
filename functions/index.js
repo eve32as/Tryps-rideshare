@@ -503,6 +503,7 @@ exports.approveDriverApplication = onCall({ region: REGION }, async (request) =>
     vehicleDescription: application.vehicleDescription,
     licensePlate: application.licensePlate,
     acceptsWomenAndMinorsRides: application.acceptsWomenAndMinorsRides === true,
+    womenAndMinorsEligibilityApproved: application.acceptsWomenAndMinorsRides === true,
     ecoFriendlyVehicle: application.ecoFriendlyVehicle === true,
     verified: true,
     available: false,
@@ -560,12 +561,44 @@ exports.setDriverRidePreferences = onCall({ region: REGION }, async (request) =>
   if (!snapshot.exists || snapshot.data().verified !== true) {
     throw new HttpsError("permission-denied", "Your driver profile is not approved.");
   }
+  if (acceptsWomenAndMinorsRides &&
+      snapshot.data().womenAndMinorsEligibilityApproved !== true) {
+    throw new HttpsError(
+      "failed-precondition",
+      "A manual eligibility review is required before opting in."
+    );
+  }
   await driverRef.update({
     acceptsWomenAndMinorsRides,
     ecoFriendlyVehicle,
     updatedAt: FieldValue.serverTimestamp(),
   });
   return { acceptsWomenAndMinorsRides, ecoFriendlyVehicle };
+});
+
+exports.requestWomenAndMinorsEligibilityReview = onCall({ region: REGION }, async (request) => {
+  const uid = requireDriver(request);
+  const driverRef = db.collection("drivers").doc(uid);
+  const driverSnapshot = await driverRef.get();
+  if (!driverSnapshot.exists || driverSnapshot.data().verified !== true) {
+    throw new HttpsError("permission-denied", "Your driver profile is not approved.");
+  }
+  if (driverSnapshot.data().womenAndMinorsEligibilityApproved === true) {
+    return { status: "approved" };
+  }
+  const driver = driverSnapshot.data();
+  await db.collection("driverApplications").doc(uid).set({
+    uid,
+    displayName: driver.displayName,
+    vehicleDescription: driver.vehicleDescription,
+    licensePlate: driver.licensePlate,
+    acceptsWomenAndMinorsRides: true,
+    ecoFriendlyVehicle: driver.ecoFriendlyVehicle === true,
+    preferenceReviewOnly: true,
+    status: "pending_review",
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
+  return { status: "pending_review" };
 });
 
 exports.updateDriverLocation = onCall({ region: REGION }, async (request) => {
