@@ -134,7 +134,8 @@ class MainViewModel(
     }
 
     fun cancelRide() {
-        state.value.activeRide?.let { ride -> action { rides.cancel(ride.id) } }
+        val user = state.value.user ?: return
+        state.value.activeRide?.let { ride -> action { rides.cancel(ride.id, user.id) } }
     }
 
     fun advanceRide() {

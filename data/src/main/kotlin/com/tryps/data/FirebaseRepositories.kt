@@ -10,6 +10,7 @@ import com.tryps.domain.AccountRepository
 import com.tryps.domain.RideRepository
 import com.tryps.model.GeoPoint
 import com.tryps.model.Place
+import com.tryps.model.DriverMatchingMetrics
 import com.tryps.model.Ride
 import com.tryps.model.RideQuote
 import com.tryps.model.RideStatus
@@ -217,14 +218,13 @@ class FirebaseRideRepository(
     }
 
     override suspend fun accept(rideId: String, driver: UserProfile) {
-        firestore.runTransaction { transaction ->
-            val reference = firestore.collection("rides").document(rideId)
-            check(transaction.get(reference).getString("status") == RideStatus.SEARCHING.name) { "Ride is no longer available" }
-            transaction.update(reference, mapOf("driverId" to driver.id, "driverName" to driver.displayName, "status" to RideStatus.ACCEPTED.name))
-        }.await()
+        functions.getHttpsCallable("acceptRide")
+            .call(mapOf("rideId" to rideId, "driverId" to driver.id))
+            .await()
     }
 
     override suspend fun updateStatus(rideId: String, status: RideStatus) {
+        require(status != RideStatus.CANCELLED) { "Use cancel to record who cancelled the ride" }
         firestore.collection("rides").document(rideId).update("status", status.name).await()
     }
 
@@ -242,7 +242,11 @@ class FirebaseRideRepository(
             .forEach { it.reference.update("driverLocation", location.toMap()).await() }
     }
 
-    override suspend fun cancel(rideId: String) = updateStatus(rideId, RideStatus.CANCELLED)
+    override suspend fun cancel(rideId: String, userId: String) {
+        functions.getHttpsCallable("cancelRide")
+            .call(mapOf("rideId" to rideId, "userId" to userId))
+            .await()
+    }
 
     override suspend fun rate(rideId: String, rating: Int) {
         firestore.collection("rides").document(rideId).update("rating", rating.coerceIn(1, 5)).await()
@@ -262,6 +266,14 @@ private fun DocumentSnapshot.toProfile(fallbackEmail: String) = UserProfile(
         getString("vehicleCategory"),
         if (enumValueOrDefault(getString("role"), UserRole.RIDER) == UserRole.DRIVER) VehicleCategory.STANDARD else VehicleCategory.ANY,
     ),
+    matchingMetrics = (get("matchingMetrics") as? Map<*, *>)?.let { metrics ->
+        DriverMatchingMetrics(
+            cancellationCount = (metrics["cancellationCount"] as? Number)?.toInt() ?: 0,
+            completedRideCount = (metrics["completedRideCount"] as? Number)?.toInt() ?: 0,
+            etaSampleCount = (metrics["etaSampleCount"] as? Number)?.toInt() ?: 0,
+            averageEtaErrorSeconds = (metrics["averageEtaErrorSeconds"] as? Number)?.toDouble() ?: 0.0,
+        )
+    } ?: DriverMatchingMetrics(),
 )
 
 private fun DocumentSnapshot.toRide(): Ride? = runCatching {
@@ -278,6 +290,7 @@ private fun DocumentSnapshot.toRide(): Ride? = runCatching {
         status = enumValueOrDefault(getString("status"), RideStatus.SEARCHING),
         createdAtEpochMillis = getLong("createdAtEpochMillis") ?: 0,
         rating = getLong("rating")?.toInt(),
+        pickupEtaSeconds = getLong("pickupEtaSeconds")?.toInt(),
         vehicleCategory = enumValueOrDefault(getString("vehicleCategory"), VehicleCategory.ANY),
     )
 }.getOrNull()

@@ -19,15 +19,25 @@ service cloud.firestore {
     }
 
     match /users/{userId} {
-      allow read, update, delete: if isOwner(userId);
+      allow read, delete: if isOwner(userId);
+      allow update: if isOwner(userId)
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(["displayName", "phone", "vehicle", "vehicleCategory"]);
       allow create: if isOwner(userId)
         && validRole(request.resource.data.role)
-        && request.resource.data.email == request.auth.token.email;
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.keys().hasOnly([
+          "displayName", "email", "role", "rating", "vehicleCategory", "createdAt"
+        ]);
     }
 
     match /drivers/{driverId} {
       allow read: if isOwner(driverId);
-      allow create, update, delete: if isOwner(driverId) && hasRole("DRIVER");
+      allow create, update: if isOwner(driverId)
+        && hasRole("DRIVER")
+        && request.resource.data.keys().hasOnly(["location", "available", "updatedAt"])
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if isOwner(driverId) && hasRole("DRIVER");
     }
 
     match /rides/{rideId} {
@@ -42,38 +52,18 @@ service cloud.firestore {
         && request.resource.data.status == "SEARCHING"
         && request.resource.data.driverId == null;
 
-      allow update: if signedIn() && (
-        validDriverAcceptance() ||
-        validParticipantUpdate() ||
-        validRiderRating()
-      );
-
-      function validDriverAcceptance() {
-        return resource.data.status == "SEARCHING"
-          && hasRole("DRIVER")
-          && request.resource.data.status == "ACCEPTED"
-          && request.resource.data.driverId == request.auth.uid
-          && request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly(["driverId", "driverName", "status"]);
-      }
+      allow update: if signedIn() && (validParticipantUpdate() || validRiderRating());
 
       function validParticipantUpdate() {
-        return (
-          resource.data.riderId == request.auth.uid
-          && request.resource.data.status == "CANCELLED"
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status"])
-        ) || (
-          resource.data.driverId == request.auth.uid
+        return resource.data.driverId == request.auth.uid
           && request.resource.data.diff(resource.data).affectedKeys()
             .hasOnly(["status", "driverLocation"])
           && (
             request.resource.data.status == resource.data.status ||
             resource.data.status == "ACCEPTED" && request.resource.data.status == "DRIVER_ARRIVING" ||
             resource.data.status == "DRIVER_ARRIVING" && request.resource.data.status == "IN_PROGRESS" ||
-            resource.data.status == "IN_PROGRESS" && request.resource.data.status == "COMPLETED" ||
-            request.resource.data.status == "CANCELLED"
-          )
-        );
+            resource.data.status == "IN_PROGRESS" && request.resource.data.status == "COMPLETED"
+          );
       }
 
       function validRiderRating() {

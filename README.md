@@ -6,7 +6,7 @@ Tryps is a Kotlin Android rideshare MVP for riders and drivers. It uses Jetpack 
 
 - Email/password registration and sign-in with rider and driver roles
 - Pickup and destination search, route map, server-calculated quote, and simulated payment
-- Ride request, driver acceptance, trip status, cancellation, history, and ratings
+- Ride request, category-aware driver acceptance, trip status, cancellation, history, and ratings
 - Driver vehicle categories, availability, location updates, and traffic-aware pickup recommendations
 - Push-notification service for ride updates
 - Offline-friendly Firestore listeners and a no-credentials demo backend
@@ -65,8 +65,8 @@ workflow can also be started manually from the Actions tab.
 
 ## Data model
 
-- `users/{uid}` stores account role, profile, and driver vehicle category.
+- `users/{uid}` stores account role, profile, driver vehicle category, and server-maintained matching metrics.
 - `drivers/{uid}` stores availability and latest location.
-- `rides/{rideId}` stores route, requested vehicle category, server quote, participants, status, and optional rating.
+- `rides/{rideId}` stores route, requested vehicle category, server quote, participants, status, pickup ETA at acceptance, and optional rating.
 
-Ride recommendations are ranked server-side by traffic-aware driving time from an available driver's latest location to compatible open pickups. Drivers select a vehicle category at registration; riders can request a category or choose no preference. Driver ETA/cancellation history, automatic assignment, notifications, payment processing, and stricter status-transition enforcement remain future dispatch work.
+Ride recommendations use a deterministic reliability-adjusted score based on traffic-aware pickup ETA, driver cancellation/completion history, observed ETA error, and vehicle-category compatibility. Trusted Cloud Functions record cancellations, completions, and pickup-time error samples using idempotent events. This is a heuristic rather than a trained ML model; training infrastructure and automatic multi-driver assignment remain future work.

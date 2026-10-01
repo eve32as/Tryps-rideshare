@@ -28,6 +28,14 @@ data class UserProfile(
     val vehicle: String = "",
     val rating: Double = 5.0,
     val vehicleCategory: VehicleCategory = VehicleCategory.STANDARD,
+    val matchingMetrics: DriverMatchingMetrics = DriverMatchingMetrics(),
+)
+
+data class DriverMatchingMetrics(
+    val cancellationCount: Int = 0,
+    val completedRideCount: Int = 0,
+    val etaSampleCount: Int = 0,
+    val averageEtaErrorSeconds: Double = 0.0,
 )
 
 data class RideQuote(

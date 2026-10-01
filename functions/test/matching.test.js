@@ -2,7 +2,12 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { filterCompatibleRides, rankRideRecommendations } = require("../matching");
+const {
+  applyMatchingMetricEvent,
+  calculateReliabilityPenalty,
+  filterCompatibleRides,
+  rankRideRecommendations,
+} = require("../matching");
 
 test("ranks rides by traffic-aware pickup ETA", () => {
   const ranked = rankRideRecommendations(
@@ -53,4 +58,45 @@ test("treats legacy ride and driver profiles as broadly compatible", () => {
   const candidates = [{ id: "legacy" }, { id: "luxury", vehicleCategory: "LUXURY" }];
   assert.deepEqual(filterCompatibleRides(candidates, undefined).map(({ id }) => id), ["legacy"]);
   assert.deepEqual(filterCompatibleRides(candidates, "ANY").map(({ id }) => id), ["legacy", "luxury"]);
+});
+
+test("updates cancellation, completion, and average ETA error history", () => {
+  const metrics = applyMatchingMetricEvent({
+    cancellationCount: 1,
+    completedRideCount: 2,
+    etaSampleCount: 2,
+    averageEtaErrorSeconds: 30,
+  }, { type: "etaError", errorSeconds: 90 });
+
+  assert.deepEqual(metrics, {
+    cancellationCount: 1,
+    completedRideCount: 2,
+    etaSampleCount: 3,
+    averageEtaErrorSeconds: 50,
+  });
+  assert.equal(applyMatchingMetricEvent(metrics, { type: "cancellation" }).cancellationCount, 2);
+  assert.equal(applyMatchingMetricEvent(metrics, { type: "completion" }).completedRideCount, 3);
+});
+
+test("incorporates cancellation and ETA accuracy history into match scoring", () => {
+  const reliablePenalty = calculateReliabilityPenalty({
+    cancellationCount: 0,
+    completedRideCount: 30,
+    etaSampleCount: 12,
+    averageEtaErrorSeconds: 20,
+  });
+  const unreliablePenalty = calculateReliabilityPenalty({
+    cancellationCount: 8,
+    completedRideCount: 2,
+    etaSampleCount: 12,
+    averageEtaErrorSeconds: 240,
+  });
+  assert.ok(unreliablePenalty > reliablePenalty);
+
+  const recommendations = rankRideRecommendations(
+    [{ id: "ride" }],
+    [{ destinationIndex: 0, condition: "ROUTE_EXISTS", duration: "300s", distanceMeters: 2000 }],
+    { cancellationCount: 8, completedRideCount: 2, etaSampleCount: 12, averageEtaErrorSeconds: 240 },
+  );
+  assert.equal(recommendations[0].matchingScoreSeconds, 300 + unreliablePenalty);
 });

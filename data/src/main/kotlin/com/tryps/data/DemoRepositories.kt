@@ -118,7 +118,7 @@ class DemoRideRepository : RideRepository {
         locations.value = locations.value + (driverId to location)
     }
 
-    override suspend fun cancel(rideId: String) = updateStatus(rideId, RideStatus.CANCELLED)
+    override suspend fun cancel(rideId: String, userId: String) = updateStatus(rideId, RideStatus.CANCELLED)
 
     override suspend fun rate(rideId: String, rating: Int) = update(rideId) { it.copy(rating = rating.coerceIn(1, 5)) }
 
