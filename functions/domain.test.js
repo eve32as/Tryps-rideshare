@@ -9,6 +9,7 @@ const {
   canTransitionRide,
   distanceInKilometers,
   isFreshDriverLocation,
+  matchesRidePreferences,
   normalizeDriverRidePreferences,
   normalizeRidePreferences,
   rankNearbyDrivers,
@@ -157,6 +158,13 @@ test("matches only drivers that satisfy opted-in safety and eco preferences", ()
     }),
     []
   );
+  assert.equal(matchesRidePreferences(driver, {
+    womanDriverForWomenAndMinors: true,
+    ecoFriendlyVehicle: true,
+  }), true);
+  assert.equal(matchesRidePreferences({ ...driver, ecoFriendlyVehicle: false }, {
+    ecoFriendlyVehicle: true,
+  }), false);
 });
 
 test("validates rider preferences and defaults omitted preferences to standard matching", () => {

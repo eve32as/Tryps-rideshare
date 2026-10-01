@@ -16,6 +16,7 @@ const {
   calculateQuote,
   canTransitionRide,
   isFreshDriverLocation,
+  matchesRidePreferences,
   normalizeDriverRidePreferences,
   normalizeRidePreferences,
   rankNearbyDrivers,
@@ -625,6 +626,12 @@ exports.claimRideOffer = onCall({ region: REGION }, async (request) => {
     if (!rideSnapshot.exists || rideSnapshot.data().status !== "offered" ||
         rideSnapshot.data().paymentStatus !== "succeeded") {
       throw new HttpsError("already-exists", "Another driver has accepted this ride.");
+    }
+    if (!matchesRidePreferences(driverSnapshot.data(), rideSnapshot.data().preferences)) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Your ride preferences no longer match this offer."
+      );
     }
     const competingOfferRefs = (rideSnapshot.data().offeredDriverUids ?? [])
       .filter((driverUid) => driverUid !== uid)

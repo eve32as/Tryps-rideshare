@@ -103,12 +103,17 @@ function isFreshDriverLocation(updatedAtMillis, nowMillis, maxAgeMillis = DRIVER
     nowMillis - updatedAtMillis <= maxAgeMillis;
 }
 
+function matchesRidePreferences(driver, preferences = {}) {
+  return (!preferences.womanDriverForWomenAndMinors ||
+      driver.acceptsWomenAndMinorsRides === true) &&
+    (!preferences.ecoFriendlyVehicle || driver.ecoFriendlyVehicle === true);
+}
+
 function rankNearbyDrivers(drivers, pickup, radiusKm, nowMillis, preferences = {}) {
   if (!validCoordinate(pickup) || !Number.isFinite(radiusKm) || radiusKm <= 0) return [];
   return drivers
     .filter((driver) => driver.available === true && driver.verified === true &&
-      (!preferences.womanDriverForWomenAndMinors || driver.acceptsWomenAndMinorsRides === true) &&
-      (!preferences.ecoFriendlyVehicle || driver.ecoFriendlyVehicle === true) &&
+      matchesRidePreferences(driver, preferences) &&
       validCoordinate(driver.location) &&
       isFreshDriverLocation(driver.locationUpdatedAtMillis, nowMillis))
     .map((driver) => ({
@@ -137,6 +142,7 @@ module.exports = {
   canTransitionRide,
   distanceInKilometers,
   isFreshDriverLocation,
+  matchesRidePreferences,
   normalizeDriverRidePreferences,
   normalizeRidePreferences,
   rankNearbyDrivers,
