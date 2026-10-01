@@ -200,34 +200,56 @@ exports.createRidePaymentIntent = onCall({
     throw new HttpsError("failed-precondition", "The booking amount is invalid.");
   }
 
+  const publishableKey = STRIPE_PUBLISHABLE_KEY.value();
+  if (!publishableKey) {
+    throw new HttpsError("failed-precondition", "Payments are not fully configured.");
+  }
   const stripe = getStripe();
-  const paymentAttempt = (ride.paymentAttempts ?? 0) + 1;
   let intent;
   try {
-    intent = await stripe.paymentIntents.create({
-      amount: ride.amountCents,
-      currency: ride.currency,
-      automatic_payment_methods: { enabled: true },
-      metadata: { rideId, riderUid: uid },
-    }, { idempotencyKey: `ride-payment-${rideId}-${paymentAttempt}` });
+    intent = ride.paymentIntentId
+      ? await stripe.paymentIntents.retrieve(ride.paymentIntentId)
+      : await stripe.paymentIntents.create({
+        amount: ride.amountCents,
+        currency: ride.currency,
+        automatic_payment_methods: { enabled: true },
+        metadata: { rideId, riderUid: uid },
+      }, { idempotencyKey: `ride-payment-${rideId}` });
   } catch (error) {
     logger.error("Stripe PaymentIntent creation failed", { rideId, error: error.message });
     throw new HttpsError("internal", "Could not start payment. Please try again.");
   }
-  await db.runTransaction(async (transaction) => {
-    const current = await transaction.get(rideRef);
-    if (!current.exists || current.data().riderUid !== uid) {
-      throw new HttpsError("not-found", "Booking not found.");
-    }
-    transaction.update(rideRef, {
-      paymentIntentId: intent.id,
-      paymentAttempts: paymentAttempt,
-      updatedAt: FieldValue.serverTimestamp(),
+  if (intent.metadata?.rideId !== rideId ||
+      intent.amount !== ride.amountCents ||
+      intent.currency !== ride.currency) {
+    throw new HttpsError("failed-precondition", "The payment does not match this booking.");
+  }
+  if (!["requires_payment_method", "requires_action", "requires_confirmation"].includes(intent.status)) {
+    throw new HttpsError(
+      "failed-precondition",
+      intent.status === "succeeded"
+        ? "Payment is already processing. Wait for your ride status to update."
+        : "This payment can no longer be retried. Cancel the booking and request a new ride."
+    );
+  }
+
+  if (!ride.paymentIntentId) {
+    await db.runTransaction(async (transaction) => {
+      const current = await transaction.get(rideRef);
+      if (!current.exists || current.data().riderUid !== uid) {
+        throw new HttpsError("not-found", "Booking not found.");
+      }
+      const currentRide = current.data();
+      if (currentRide.status !== "awaiting_payment" ||
+          !["unpaid", "failed"].includes(currentRide.paymentStatus) ||
+          (currentRide.paymentIntentId && currentRide.paymentIntentId !== intent.id)) {
+        throw new HttpsError("failed-precondition", "This booking is no longer awaiting payment.");
+      }
+      transaction.update(rideRef, {
+        paymentIntentId: intent.id,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
     });
-  });
-  const publishableKey = STRIPE_PUBLISHABLE_KEY.value();
-  if (!publishableKey) {
-    throw new HttpsError("failed-precondition", "Payments are not fully configured.");
   }
   return { clientSecret: intent.client_secret, publishableKey };
 });
