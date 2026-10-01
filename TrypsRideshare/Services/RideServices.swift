@@ -18,6 +18,24 @@ enum AccountRole: String, CaseIterable, Identifiable {
     }
 }
 
+struct DriverRide: Decodable, Identifiable {
+    let id: String
+    let pickup: String
+    let destination: String
+    let rideType: String
+    let status: String
+}
+
+struct SignedInSession {
+    let sessionToken: String
+    let role: AccountRole
+}
+
+struct DriverProfile: Decodable {
+    let onboardingComplete: Bool
+    let available: Bool
+}
+
 struct RideLocation: Encodable {
     let label: String
     let latitude: Double
@@ -55,6 +73,7 @@ struct PendingPayment: Identifiable {
 
 enum RideAPIError: LocalizedError {
     case configuration
+    case paymentConfiguration
     case response
     case server(String)
 
@@ -62,6 +81,8 @@ enum RideAPIError: LocalizedError {
         switch self {
         case .configuration:
             "Set TRYPS_API_BASE_URL in the Xcode build settings to your HTTPS API URL."
+        case .paymentConfiguration:
+            "Set STRIPE_PUBLISHABLE_KEY in the Xcode build settings."
         case .response:
             "The server returned an invalid response."
         case .server(let message):
@@ -79,12 +100,14 @@ enum RideAPI {
 
     private struct AppleSignInResponse: Decodable {
         let sessionToken: String
+        let role: String
     }
 
-    static func signIn(identityToken: String, nonce: String, role: AccountRole) async throws -> String {
+    static func signIn(identityToken: String, nonce: String, role: AccountRole) async throws -> SignedInSession {
         let request = AppleSignInRequest(identityToken: identityToken, nonce: nonce, role: role.rawValue)
         let response: AppleSignInResponse = try await send("/v1/auth/apple", method: "POST", body: request)
-        return response.sessionToken
+        guard let role = AccountRole(rawValue: response.role) else { throw RideAPIError.response }
+        return SignedInSession(sessionToken: response.sessionToken, role: role)
     }
 
     static func requestRide(token: String, request: RideRequest) async throws -> RideRequestResponse {
@@ -100,16 +123,84 @@ enum RideAPI {
         )
     }
 
+    static func driverOnboarding(token: String) async throws -> URL {
+        let response: DriverOnboardingResponse = try await send(
+            "/v1/driver/connect-onboarding",
+            method: "POST",
+            body: EmptyBody(),
+            token: token
+        )
+        return response.onboardingUrl
+    }
+
+    static func driverProfile(token: String) async throws -> DriverProfile {
+        try await send("/v1/driver/profile", method: "GET", token: token)
+    }
+
+    static func updateDriverLocation(token: String, coordinate: CLLocationCoordinate2D) async throws {
+        let location = DriverCoordinate(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        let _: DriverLocationResponse = try await send(
+            "/v1/driver/location",
+            method: "PUT",
+            body: location,
+            token: token
+        )
+    }
+
+    static func setDriverAvailability(token: String, available: Bool) async throws {
+        let _: DriverAvailabilityResponse = try await send(
+            "/v1/driver/availability",
+            method: "PATCH",
+            body: DriverAvailabilityRequest(available: available),
+            token: token
+        )
+    }
+
+    static func assignedRides(token: String) async throws -> [DriverRide] {
+        let response: DriverRidesResponse = try await send(
+            "/v1/driver/rides",
+            method: "GET",
+            token: token
+        )
+        return response.rides
+    }
+
+    static func completeRide(token: String, rideID: String) async throws {
+        let _: RideCompletedResponse = try await send(
+            "/v1/driver/rides/\(rideID)/complete",
+            method: "POST",
+            body: EmptyBody(),
+            token: token
+        )
+    }
+
+    private static func send<Response: Decodable>(
+        _ path: String,
+        method: String,
+        token: String? = nil
+    ) async throws -> Response {
+        var request = try makeRequest(path, method: method, token: token)
+        return try await perform(&request)
+    }
+
     private static func send<Response: Decodable, Body: Encodable>(
         _ path: String,
         method: String,
         body: Body,
         token: String? = nil
     ) async throws -> Response {
+        var request = try makeRequest(path, method: method, token: token)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
+        return try await perform(&request)
+    }
+
+    private static func makeRequest(_ path: String, method: String, token: String?) throws -> URLRequest {
         guard
             let configuredURL = Bundle.main.object(forInfoDictionaryKey: "TRYPS_API_BASE_URL") as? String,
             let baseURL = URL(string: configuredURL),
             baseURL.scheme == "https",
+            baseURL.host?.hasSuffix(".invalid") == false,
             let url = URL(string: path, relativeTo: baseURL)
         else {
             throw RideAPIError.configuration
@@ -117,12 +208,13 @@ enum RideAPI {
 
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token {
             request.setValue("Bear" + "er " + token, forHTTPHeaderField: "Authorization")
         }
-        request.httpBody = try JSONEncoder().encode(body)
+        return request
+    }
 
+    private static func perform<Response: Decodable>(_ request: inout URLRequest) async throws -> Response {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let response = response as? HTTPURLResponse else { throw RideAPIError.response }
         guard (200..<300).contains(response.statusCode) else {
@@ -142,6 +234,35 @@ private struct CancellationResponse: Decodable {
     let cancelled: Bool
 }
 
+private struct DriverOnboardingResponse: Decodable {
+    let onboardingUrl: URL
+}
+
+private struct DriverCoordinate: Encodable {
+    let latitude: Double
+    let longitude: Double
+}
+
+private struct DriverLocationResponse: Decodable {
+    let updated: Bool
+}
+
+private struct DriverAvailabilityRequest: Encodable {
+    let available: Bool
+}
+
+private struct DriverAvailabilityResponse: Decodable {
+    let available: Bool
+}
+
+private struct DriverRidesResponse: Decodable {
+    let rides: [DriverRide]
+}
+
+private struct RideCompletedResponse: Decodable {
+    let completed: Bool
+}
+
 private struct EmptyBody: Encodable {}
 
 struct PaymentSheetPresenter: UIViewControllerRepresentable {
@@ -153,9 +274,10 @@ struct PaymentSheetPresenter: UIViewControllerRepresentable {
         controller.presentPayment = { [clientSecret, onCompletion] presenter in
             guard
                 let key = Bundle.main.object(forInfoDictionaryKey: "STRIPE_PUBLISHABLE_KEY") as? String,
-                key.hasPrefix("pk_")
+                key.hasPrefix("pk_"),
+                !key.contains("replace_me")
             else {
-                onCompletion(.failed(error: RideAPIError.configuration))
+                onCompletion(.failed(error: RideAPIError.paymentConfiguration))
                 return
             }
             StripeAPI.defaultPublishableKey = key
@@ -163,6 +285,7 @@ struct PaymentSheetPresenter: UIViewControllerRepresentable {
             configuration.merchantDisplayName = "Tryps"
             configuration.allowsDelayedPaymentMethods = false
             let sheet = PaymentSheet(paymentIntentClientSecret: clientSecret, configuration: configuration)
+            presenter.paymentSheet = sheet
             sheet.present(from: presenter, completion: onCompletion)
         }
         return controller
@@ -173,6 +296,7 @@ struct PaymentSheetPresenter: UIViewControllerRepresentable {
 
 final class PaymentSheetPresenterController: UIViewController {
     var presentPayment: ((UIViewController) -> Void)?
+    var paymentSheet: PaymentSheet?
     private var didPresent = false
 
     override func viewDidAppear(_ animated: Bool) {
@@ -185,9 +309,24 @@ final class PaymentSheetPresenterController: UIViewController {
 
 enum SessionStore {
     private static let service = "com.tryps.rideshare.session"
-    private static let account = "api-token"
+    private static let tokenAccount = "api-token"
+    private static let roleAccount = "account-role"
 
     static func loadToken() -> String? {
+        load(account: tokenAccount)
+    }
+
+    static func loadRole() -> AccountRole? {
+        guard let value = load(account: roleAccount) else { return nil }
+        return AccountRole(rawValue: value)
+    }
+
+    static func save(sessionToken: String, role: AccountRole) throws {
+        try save(sessionToken, account: tokenAccount)
+        try save(role.rawValue, account: roleAccount)
+    }
+
+    private static func load(account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -201,8 +340,8 @@ enum SessionStore {
         return String(data: data, encoding: .utf8)
     }
 
-    static func saveToken(_ token: String) throws {
-        let data = Data(token.utf8)
+    private static func save(_ value: String, account: String) throws {
+        let data = Data(value.utf8)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -302,7 +441,7 @@ struct AppleSignInSheet: View {
                 throw RideAPIError.response
             }
             let session = try await RideAPI.signIn(identityToken: token, nonce: rawNonce, role: role)
-            try SessionStore.saveToken(session)
+            try SessionStore.save(sessionToken: session.sessionToken, role: session.role)
             onSignedIn()
             dismiss()
         } catch {
@@ -330,11 +469,13 @@ final class PickupLocationManager: NSObject, ObservableObject, CLLocationManager
 
     private let manager = CLLocationManager()
     private let geocoder = CLGeocoder()
+    private var tracksContinuously = false
 
     override init() {
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+        manager.distanceFilter = 50
     }
 
     func requestLocation() {
@@ -350,9 +491,32 @@ final class PickupLocationManager: NSObject, ObservableObject, CLLocationManager
         }
     }
 
+    func startTracking() {
+        tracksContinuously = true
+        switch manager.authorizationStatus {
+        case .notDetermined:
+            manager.requestWhenInUseAuthorization()
+        case .authorizedAlways, .authorizedWhenInUse:
+            manager.startUpdatingLocation()
+        case .denied, .restricted:
+            errorMessage = "Enable location access in Settings to go online."
+        @unknown default:
+            errorMessage = "Location access is unavailable."
+        }
+    }
+
+    func stopTracking() {
+        tracksContinuously = false
+        manager.stopUpdatingLocation()
+    }
+
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         if manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse {
-            manager.requestLocation()
+            if tracksContinuously {
+                manager.startUpdatingLocation()
+            } else {
+                manager.requestLocation()
+            }
         } else if manager.authorizationStatus == .denied || manager.authorizationStatus == .restricted {
             errorMessage = "Enable location access in Settings to use your current pickup."
         }

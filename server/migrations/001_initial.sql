@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS rides (
     amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
     currency TEXT NOT NULL,
     payment_intent_id TEXT UNIQUE,
-    status TEXT NOT NULL CHECK (status IN ('awaiting_payment', 'confirmed', 'cancelled')),
+    status TEXT NOT NULL CHECK (status IN ('awaiting_payment', 'confirmed', 'completed', 'cancelled')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

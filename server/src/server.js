@@ -1,4 +1,5 @@
 import express from "express";
+import { rateLimit } from "express-rate-limit";
 import pg from "pg";
 import Stripe from "stripe";
 import { createRemoteJWKSet, jwtVerify, SignJWT } from "jose";
@@ -61,6 +62,20 @@ app.post("/v1/webhooks/stripe", express.raw({ type: "application/json", limit: "
   }
 });
 
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+const signInLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use("/v1", apiLimiter);
+app.use("/v1/auth/apple", signInLimiter);
 app.use(express.json({ limit: "16kb", type: "application/json" }));
 
 function asyncRoute(handler) {
@@ -140,11 +155,12 @@ app.post("/v1/auth/apple", asyncRoute(async (req, res) => {
     return res.status(409).json({ error: "This Apple account is already registered with a different role." });
   }
   if (inserted.rowCount && role === "driver") {
-    return res.status(201).json({ sessionToken: await createSession(claims.sub, role), needsDriverOnboarding: true });
+    return res.status(201).json({ sessionToken: await createSession(claims.sub, role), role, needsDriverOnboarding: true });
   }
 
   return res.status(inserted.rowCount ? 201 : 200).json({
     sessionToken: await createSession(claims.sub, role),
+    role,
     needsDriverOnboarding: role === "driver",
   });
 }));
@@ -159,6 +175,19 @@ async function createSession(userId, role) {
     .setExpirationTime("1h")
     .sign(sessionKey);
 }
+
+app.get("/v1/driver/profile", authenticate, requireRole("driver"), asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    "SELECT stripe_account_id, available FROM drivers WHERE user_id = $1",
+    [req.user.id],
+  );
+  if (!result.rowCount) return res.json({ onboardingComplete: false, available: false });
+  const account = await stripe.accounts.retrieve(result.rows[0].stripe_account_id);
+  return res.json({
+    onboardingComplete: Boolean(account.details_submitted && account.payouts_enabled),
+    available: result.rows[0].available,
+  });
+}));
 
 app.post("/v1/driver/connect-onboarding", authenticate, requireRole("driver"), asyncRoute(async (req, res) => {
   const existing = await pool.query("SELECT stripe_account_id FROM drivers WHERE user_id = $1", [req.user.id]);
@@ -218,11 +247,43 @@ app.patch("/v1/driver/availability", authenticate, requireRole("driver"), asyncR
       return res.status(409).json({ error: "Complete Stripe verification before going online." });
     }
   }
-  await pool.query(
-    "UPDATE drivers SET available = $2, updated_at = now() WHERE user_id = $1",
+  const update = await pool.query(
+    `UPDATE drivers SET available = $2, updated_at = now()
+     WHERE user_id = $1
+       AND ($2 = false OR NOT EXISTS (
+         SELECT 1 FROM rides WHERE driver_user_id = $1 AND status IN ('awaiting_payment', 'confirmed')
+       ))`,
     [req.user.id, req.body.available],
   );
+  if (!update.rowCount) return res.status(409).json({ error: "Finish your assigned ride before going online again." });
   return res.json({ available: req.body.available });
+}));
+
+app.get("/v1/driver/rides", authenticate, requireRole("driver"), asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT id, pickup_label AS pickup, destination_label AS destination, ride_type AS "rideType",
+            status, created_at AS "createdAt"
+     FROM rides
+     WHERE driver_user_id = $1 AND status = 'confirmed'
+     ORDER BY created_at ASC`,
+    [req.user.id],
+  );
+  return res.json({ rides: result.rows });
+}));
+
+app.post("/v1/driver/rides/:rideId/complete", authenticate, requireRole("driver"), asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `UPDATE rides SET status = 'completed'
+     WHERE id = $1 AND driver_user_id = $2 AND status = 'confirmed'
+     RETURNING id`,
+    [req.params.rideId, req.user.id],
+  );
+  if (!result.rowCount) return res.status(404).json({ error: "Active ride not found." });
+  await pool.query(
+    "UPDATE drivers SET available = true, updated_at = now() WHERE user_id = $1",
+    [req.user.id],
+  );
+  return res.json({ completed: true });
 }));
 
 app.post("/v1/rides", authenticate, requireRole("rider"), asyncRoute(async (req, res) => {
@@ -366,6 +427,69 @@ app.get("/v1/rides/:rideId", authenticate, requireRole("rider"), asyncRoute(asyn
   return res.json(result.rows[0]);
 }));
 
+async function expireUnpaidRideReservations() {
+  const client = await pool.connect();
+  let transactionOpen = false;
+  try {
+    await client.query("BEGIN");
+    transactionOpen = true;
+    const expired = await client.query(
+      `SELECT id, driver_user_id, payment_intent_id
+       FROM rides
+       WHERE status = 'awaiting_payment'
+         AND created_at < now() - ($1::double precision * interval '1 minute')
+       ORDER BY created_at
+       LIMIT 20
+       FOR UPDATE SKIP LOCKED`,
+      [config.paymentReservationMinutes],
+    );
+    for (const ride of expired.rows) {
+      let paymentStatus;
+      try {
+        const intent = await stripe.paymentIntents.cancel(ride.payment_intent_id);
+        paymentStatus = intent.status;
+      } catch {
+        const intent = await stripe.paymentIntents.retrieve(ride.payment_intent_id);
+        paymentStatus = intent.status;
+      }
+
+      if (paymentStatus === "succeeded") {
+        await client.query(
+          "UPDATE rides SET status = 'confirmed' WHERE id = $1 AND status = 'awaiting_payment'",
+          [ride.id],
+        );
+        continue;
+      }
+      if (paymentStatus !== "canceled") continue;
+
+      const cancelled = await client.query(
+        "UPDATE rides SET status = 'cancelled' WHERE id = $1 AND status = 'awaiting_payment'",
+        [ride.id],
+      );
+      if (cancelled.rowCount) {
+        await client.query(
+          `UPDATE drivers SET available = true
+           WHERE user_id = $1
+             AND NOT EXISTS (
+               SELECT 1 FROM rides WHERE driver_user_id = $1 AND status IN ('awaiting_payment', 'confirmed')
+             )`,
+          [ride.driver_user_id],
+        );
+      }
+    }
+    await client.query("COMMIT");
+    transactionOpen = false;
+  } catch (error) {
+    if (transactionOpen) await client.query("ROLLBACK").catch(() => {});
+    console.error("Could not expire pending ride reservations:", error);
+  } finally {
+    client.release();
+  }
+}
+
+const reservationCleanup = setInterval(expireUnpaidRideReservations, 60_000);
+reservationCleanup.unref();
+
 app.use((error, _req, res, _next) => {
   console.error("API request failed:", error);
   if (res.headersSent) return;
@@ -377,6 +501,7 @@ const server = app.listen(config.port, () => {
 });
 
 async function shutdown() {
+  clearInterval(reservationCleanup);
   server.close();
   await pool.end();
 }

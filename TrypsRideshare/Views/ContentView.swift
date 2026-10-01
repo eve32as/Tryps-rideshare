@@ -6,6 +6,7 @@ import StripePaymentSheet
 private enum AppTab {
     case ride
     case activity
+    case drive
 }
 
 private struct RideOption: Identifiable {
@@ -41,6 +42,8 @@ private enum TrypsStyle {
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
     @Query(sort: \RideBooking.requestedAt, order: .reverse) private var bookings: [RideBooking]
     @StateObject private var locationManager = PickupLocationManager()
 
@@ -50,7 +53,14 @@ struct ContentView: View {
     @State private var destination = ""
     @State private var pickupCoordinate: CLLocationCoordinate2D?
     @State private var destinationCoordinate: CLLocationCoordinate2D?
+    @State private var resolvedPickupLabel: String?
+    @State private var resolvedDestinationLabel: String?
     @State private var sessionToken = SessionStore.loadToken()
+    @State private var accountRole = SessionStore.loadRole()
+    @State private var driverAvailable = false
+    @State private var driverOnboardingComplete = false
+    @State private var driverRides: [DriverRide] = []
+    @State private var isDriverLoading = false
     @State private var isSignInPresented = false
     @State private var isRequestingRide = false
     @State private var errorMessage: String?
@@ -67,6 +77,8 @@ struct ContentView: View {
 
             if selectedTab == .ride {
                 rideScreen
+            } else if selectedTab == .drive {
+                driverScreen
             } else {
                 activityScreen
             }
@@ -83,6 +95,7 @@ struct ContentView: View {
         .sheet(isPresented: $isSignInPresented) {
             AppleSignInSheet {
                 sessionToken = SessionStore.loadToken()
+                accountRole = SessionStore.loadRole()
             }
             .presentationDetents([.medium])
             .presentationDragIndicator(.visible)
@@ -104,23 +117,52 @@ struct ContentView: View {
         .onAppear {
             locationManager.requestLocation()
         }
+        .onChange(of: selectedTab) { _, tab in
+            if tab != .drive || accountRole != .driver {
+                locationManager.stopTracking()
+            }
+        }
+        .task(id: selectedTab) {
+            guard selectedTab == .drive, accountRole == .driver else { return }
+            while !Task.isCancelled {
+                guard await refreshDriverDashboard() else { return }
+                try? await Task.sleep(for: .seconds(15))
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active, selectedTab == .drive, accountRole == .driver {
+                Task { await refreshDriverDashboard() }
+            } else if phase != .active, accountRole == .driver, driverAvailable, let sessionToken {
+                locationManager.stopTracking()
+                driverAvailable = false
+                Task { try? await RideAPI.setDriverAvailability(token: sessionToken, available: false) }
+            }
+        }
         .onReceive(locationManager.$coordinate.compactMap { $0 }) { coordinate in
             if pickup == "Current location" || locationManager.address == pickup {
                 pickupCoordinate = coordinate
             }
+            if selectedTab == .drive, driverAvailable, let sessionToken {
+                Task { try? await RideAPI.updateDriverLocation(token: sessionToken, coordinate: coordinate) }
+            }
         }
         .onReceive(locationManager.$address.compactMap { $0 }) { address in
             if pickup == "Current location" || locationManager.address == pickup {
+                resolvedPickupLabel = address
                 pickup = address
             }
         }
         .onChange(of: pickup) { _, newValue in
-            if newValue != locationManager.address {
+            if newValue != resolvedPickupLabel {
                 pickupCoordinate = nil
+                resolvedPickupLabel = nil
             }
         }
-        .onChange(of: destination) { _, _ in
-            destinationCoordinate = nil
+        .onChange(of: destination) { _, newValue in
+            if newValue != resolvedDestinationLabel {
+                destinationCoordinate = nil
+                resolvedDestinationLabel = nil
+            }
         }
     }
 
@@ -141,7 +183,13 @@ struct ContentView: View {
             Spacer()
 
             Button {
-                isSignInPresented = true
+                if sessionToken == nil {
+                    isSignInPresented = true
+                } else if accountRole == .driver {
+                    selectedTab = .drive
+                } else {
+                    selectedTab = .activity
+                }
             } label: {
                 Image(systemName: sessionToken == nil ? "person.crop.circle.fill" : "person.crop.circle.badge.checkmark")
                     .font(.system(size: 30))
@@ -151,7 +199,13 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .accessibilityAction {
-                isSignInPresented = true
+                if sessionToken == nil {
+                    isSignInPresented = true
+                } else if accountRole == .driver {
+                    selectedTab = .drive
+                } else {
+                    selectedTab = .activity
+                }
             }
         }
         .padding(.horizontal, 22)
@@ -349,10 +403,117 @@ struct ContentView: View {
         HStack(spacing: 0) {
             tabButton(.ride, title: "Ride", symbol: "car.side.fill")
             tabButton(.activity, title: "Activity", symbol: "clock.arrow.circlepath")
+            if accountRole == .driver {
+                tabButton(.drive, title: "Drive", symbol: "steeringwheel")
+            }
+
         }
         .padding(.top, 10)
         .padding(.bottom, 4)
         .background(.white.shadow(.drop(color: .black.opacity(0.04), radius: 10, y: -3)))
+    }
+
+    private var driverScreen: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Drive with Tryps")
+                        .font(.system(size: 29, weight: .bold, design: .rounded))
+                        .foregroundStyle(TrypsStyle.ink)
+                    Text("Go online when you’re ready to take a ride.")
+                        .font(.system(size: 14))
+                        .foregroundStyle(TrypsStyle.muted)
+                }
+
+                if !driverOnboardingComplete {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label("Set up driver payouts", systemImage: "creditcard")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(TrypsStyle.ink)
+                        Text("Stripe securely collects the driver and bank details needed to receive payouts.")
+                            .font(.system(size: 13))
+                            .foregroundStyle(TrypsStyle.muted)
+                        Button("Continue with Stripe") {
+                            Task { await beginDriverOnboarding() }
+                        }
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 48)
+                        .background(TrypsStyle.accent, in: RoundedRectangle(cornerRadius: 15))
+                    }
+                    .padding(16)
+                    .background(.white, in: RoundedRectangle(cornerRadius: 20))
+                } else if driverRides.isEmpty {
+                    Button {
+                        Task { await toggleDriverAvailability() }
+                    } label: {
+                        HStack {
+                            Image(systemName: driverAvailable ? "pause.fill" : "steeringwheel")
+                            Text(driverAvailable ? "Go offline" : "Go online")
+                            Spacer()
+                            Circle()
+                                .fill(driverAvailable ? .green : TrypsStyle.muted)
+                                .frame(width: 9, height: 9)
+                        }
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 18)
+                        .frame(height: 54)
+                        .background(TrypsStyle.accent, in: RoundedRectangle(cornerRadius: 17))
+                    }
+                    .disabled(isDriverLoading)
+                } else {
+                    Label("On a ride", systemImage: "car.side.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 18)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(height: 54)
+                        .background(TrypsStyle.accent, in: RoundedRectangle(cornerRadius: 17))
+                }
+
+                HStack {
+                    Text("Assigned rides")
+                        .font(.system(size: 17, weight: .bold, design: .rounded))
+                        .foregroundStyle(TrypsStyle.ink)
+                    Spacer()
+                    Button("Refresh") { Task { await refreshDriverDashboard() } }
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(TrypsStyle.accent)
+                        .disabled(isDriverLoading)
+                }
+
+                if driverRides.isEmpty {
+                    Text(driverAvailable ? "You’re online. New assigned rides will appear here." : "No active rides.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(TrypsStyle.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(18)
+                        .background(.white, in: RoundedRectangle(cornerRadius: 18))
+                } else {
+                    ForEach(driverRides) { ride in
+                        VStack(alignment: .leading, spacing: 10) {
+                            Label(ride.pickup, systemImage: "circle.fill")
+                            Label(ride.destination, systemImage: "mappin.and.ellipse")
+                            Button("Complete ride") {
+                                Task { await completeDriverRide(ride) }
+                            }
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(TrypsStyle.accent)
+                        }
+                        .font(.system(size: 13))
+                        .foregroundStyle(TrypsStyle.ink)
+                        .padding(15)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.white, in: RoundedRectangle(cornerRadius: 18))
+                    }
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 8)
+            .padding(.bottom, 20)
+        }
     }
 
     private func tabButton(_ tab: AppTab, title: String, symbol: String) -> some View {
@@ -370,6 +531,82 @@ struct ContentView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    @MainActor
+    private func refreshDriverDashboard() async -> Bool {
+        guard let sessionToken, accountRole == .driver else { return false }
+        guard !isDriverLoading else { return true }
+        isDriverLoading = true
+        defer { isDriverLoading = false }
+        do {
+            let profile = try await RideAPI.driverProfile(token: sessionToken)
+            driverOnboardingComplete = profile.onboardingComplete
+            driverAvailable = profile.available
+            driverRides = try await RideAPI.assignedRides(token: sessionToken)
+            if driverAvailable {
+                locationManager.startTracking()
+            }
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    @MainActor
+    private func beginDriverOnboarding() async {
+        guard let sessionToken else {
+            isSignInPresented = true
+            return
+        }
+        do {
+            let url = try await RideAPI.driverOnboarding(token: sessionToken)
+            openURL(url)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func toggleDriverAvailability() async {
+        guard let sessionToken else { return }
+        isDriverLoading = true
+        defer { isDriverLoading = false }
+        do {
+            if !driverAvailable {
+                locationManager.requestLocation()
+                guard let coordinate = locationManager.coordinate else {
+                    errorMessage = locationManager.errorMessage ?? "Wait for your current location, then try going online again."
+                    return
+                }
+                try await RideAPI.updateDriverLocation(token: sessionToken, coordinate: coordinate)
+            }
+            let newAvailability = !driverAvailable
+            try await RideAPI.setDriverAvailability(token: sessionToken, available: newAvailability)
+            driverAvailable = newAvailability
+            if newAvailability {
+                locationManager.startTracking()
+            } else {
+                locationManager.stopTracking()
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func completeDriverRide(_ ride: DriverRide) async {
+        guard let sessionToken else { return }
+        isDriverLoading = true
+        defer { isDriverLoading = false }
+        do {
+            try await RideAPI.completeRide(token: sessionToken, rideID: ride.id)
+            driverRides.removeAll { $0.id == ride.id }
+            driverAvailable = true
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     @MainActor
@@ -453,7 +690,8 @@ struct ContentView: View {
         guard !query.isEmpty else { return }
         do {
             let item = try await searchPlace(query)
-            pickup = item.name ?? query
+            resolvedPickupLabel = item.name ?? query
+            pickup = resolvedPickupLabel ?? query
             pickupCoordinate = item.placemark.coordinate
         } catch {
             errorMessage = "Couldn’t find that pickup. Try a nearby address or place name."
@@ -466,7 +704,8 @@ struct ContentView: View {
         guard !query.isEmpty else { return }
         do {
             let item = try await searchPlace(query)
-            destination = item.name ?? query
+            resolvedDestinationLabel = item.name ?? query
+            destination = resolvedDestinationLabel ?? query
             destinationCoordinate = item.placemark.coordinate
         } catch {
             errorMessage = "Couldn’t find that destination. Try a nearby address or place name."
@@ -672,7 +911,7 @@ private struct ReceiptView: View {
             Text("Your ride is requested")
                 .font(.system(size: 22, weight: .bold, design: .rounded))
                 .foregroundStyle(TrypsStyle.ink)
-            Text("Your \(receipt.rideName) is on its way.")
+            Text("Payment submitted. Your driver will appear once it’s confirmed.")
                 .font(.system(size: 14))
                 .foregroundStyle(TrypsStyle.muted)
             VStack(alignment: .leading, spacing: 12) {

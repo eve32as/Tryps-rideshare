@@ -22,6 +22,25 @@ export function readConfig(env = process.env) {
   if (!Number.isInteger(applicationFeeBasisPoints) || applicationFeeBasisPoints < 0 || applicationFeeBasisPoints > 5000) {
     throw new Error("PLATFORM_FEE_BPS must be an integer between 0 and 5000.");
   }
+  const currency = (env.STRIPE_CURRENCY ?? "usd").toLowerCase();
+  if (!/^[a-z]{3}$/.test(currency)) {
+    throw new Error("STRIPE_CURRENCY must be a three-letter ISO currency code.");
+  }
+  for (const name of ["DRIVER_ONBOARDING_RETURN_URL", "DRIVER_ONBOARDING_REFRESH_URL"]) {
+    let url;
+    try {
+      url = new URL(env[name]);
+    } catch {
+      throw new Error(`${name} must be an HTTPS URL.`);
+    }
+    if (url.protocol !== "https:" || url.hostname.endsWith(".invalid")) {
+      throw new Error(`${name} must be a real HTTPS URL.`);
+    }
+  }
+  const port = Number(env.PORT ?? 8080);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("PORT must be a valid TCP port.");
+  }
 
   return {
     databaseUrl: env.DATABASE_URL,
@@ -32,7 +51,7 @@ export function readConfig(env = process.env) {
     stripeConnectCountry: env.STRIPE_CONNECT_COUNTRY,
     driverOnboardingReturnUrl: env.DRIVER_ONBOARDING_RETURN_URL,
     driverOnboardingRefreshUrl: env.DRIVER_ONBOARDING_REFRESH_URL,
-    port: Number(env.PORT ?? 8080),
+    port,
     ridePrices: {
       "tryps-go": 1250,
       "tryps-comfort": 1820,
@@ -41,6 +60,7 @@ export function readConfig(env = process.env) {
     currency: "usd",
     applicationFeeBasisPoints,
     matchingRadiusMeters: 10000,
-    currency: (env.STRIPE_CURRENCY ?? "usd").toLowerCase(),
+    paymentReservationMinutes: 20,
+    currency,
   };
 }

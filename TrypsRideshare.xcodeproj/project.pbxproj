@@ -149,7 +149,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TRYPS_API_BASE_URL = "https://api.example.com";
+				TRYPS_API_BASE_URL = "https://tryps.invalid";
 				STRIPE_PUBLISHABLE_KEY = pk_test_replace_me;
 			};
 			name = Debug;
@@ -172,7 +172,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TRYPS_API_BASE_URL = "https://api.example.com";
+				TRYPS_API_BASE_URL = "https://tryps.invalid";
 				STRIPE_PUBLISHABLE_KEY = pk_test_replace_me;
 			};
 			name = Release;
