@@ -95,7 +95,9 @@ struct ContentView: View {
 
     private var routeRequestID: String {
         guard let pickupCoordinate else { return "no-pickup-\(destination.id)" }
-        return "\(pickupCoordinate.latitude),\(pickupCoordinate.longitude)-\(destination.id)"
+        let latitude = (pickupCoordinate.latitude * 10_000).rounded() / 10_000
+        let longitude = (pickupCoordinate.longitude * 10_000).rounded() / 10_000
+        return "\(latitude),\(longitude)-\(destination.id)"
     }
 
     var body: some View {
@@ -185,7 +187,7 @@ struct ContentView: View {
 
         do {
             let response = try await MKDirections(request: request).calculate()
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, activeRouteRequestToken == requestToken else { return }
             guard let route = response.routes.first else {
                 self.route = nil
                 routeError = "No driving route found"
@@ -194,7 +196,7 @@ struct ContentView: View {
             self.route = route
             cameraPosition = .rect(route.polyline.boundingMapRect)
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, activeRouteRequestToken == requestToken else { return }
             route = nil
             routeError = "Route unavailable"
         }
@@ -308,7 +310,7 @@ struct ContentView: View {
                             .font(.system(size: 16))
                             .foregroundStyle(TrypsStyle.green)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Personal ·••• 2048")
+                            Text("Personal · •••• 2048")
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(TrypsStyle.ink)
                             Text("Visa")
@@ -513,6 +515,7 @@ private struct DestinationPicker: View {
     @State private var searchResults = Destination.suggestions
     @State private var isSearching = false
     @State private var searchFailed = false
+    @State private var activeSearchToken: UUID?
 
     var body: some View {
         NavigationStack {
@@ -574,15 +577,22 @@ private struct DestinationPicker: View {
     }
 
     private func searchPlaces() async {
+        let searchToken = UUID()
+        activeSearchToken = searchToken
+        defer {
+            if activeSearchToken == searchToken {
+                isSearching = false
+                activeSearchToken = nil
+            }
+        }
+
         guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             searchResults = Destination.suggestions
             searchFailed = false
-            isSearching = false
             return
         }
 
         isSearching = true
-        defer { isSearching = false }
         do {
             let request = MKLocalSearch.Request()
             request.naturalLanguageQuery = searchText
@@ -594,7 +604,7 @@ private struct DestinationPicker: View {
             }
 
             let response = try await MKLocalSearch(request: request).start()
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, activeSearchToken == searchToken else { return }
             searchResults = response.mapItems.enumerated().compactMap { index, item in
                 guard let name = item.name else { return nil }
                 let coordinate = item.placemark.coordinate
@@ -609,7 +619,7 @@ private struct DestinationPicker: View {
             }
             searchFailed = false
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, activeSearchToken == searchToken else { return }
             searchResults = []
             searchFailed = true
         }
