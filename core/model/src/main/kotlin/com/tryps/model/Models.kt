@@ -73,6 +73,8 @@ data class RideQuote(
     val demandCount: Int = 0,
     val availableDriverCount: Int = 0,
     val quoteId: String? = null,
+    val weatherCondition: String = "UNAVAILABLE",
+    val weatherDemandUpliftPercent: Int = 0,
 )
 
 data class Ride(

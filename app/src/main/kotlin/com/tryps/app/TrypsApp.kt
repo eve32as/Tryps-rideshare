@@ -237,6 +237,22 @@ private fun RiderScreen(state: MainUiState, viewModel: MainViewModel) {
                             Text("No demand adjustment · ×1.0")
                         }
                         Text(
+                            "Weather outlook (next 3h): ${state.quote.weatherCondition.weatherLabel()}" +
+                                if (state.quote.weatherDemandUpliftPercent > 0) {
+                                    " · estimated demand +${state.quote.weatherDemandUpliftPercent}%"
+                                } else {
+                                    ""
+                                },
+                            color = if (state.quote.weatherCondition == "SEVERE") {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
+                        )
+                        if (state.quote.weatherCondition != "UNAVAILABLE") {
+                            Text("Weather demand estimate is informational and does not change this fare.")
+                        }
+                        Text(
                             when (state.paymentMethod) {
                                 RidePaymentMethod.CASH -> "Cash collected by the driver after the trip"
                                 RidePaymentMethod.RIDE_PASS -> "Covered by an eligible ride pass"
@@ -338,6 +354,16 @@ private fun RidePaymentMethod.paymentLabel(): String = when (this) {
     RidePaymentMethod.CASH -> "Cash"
     RidePaymentMethod.SIMULATED_CARD -> "Simulated card"
     RidePaymentMethod.RIDE_PASS -> "Ride pass"
+}
+
+private fun String.weatherLabel(): String = when (this) {
+    "CLEAR" -> "clear"
+    "RAIN_POSSIBLE" -> "rain possible"
+    "RAIN" -> "rain"
+    "SNOW" -> "snow"
+    "WIND" -> "high winds"
+    "SEVERE" -> "severe conditions"
+    else -> "unavailable"
 }
 
 @Composable

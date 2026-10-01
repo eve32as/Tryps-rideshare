@@ -14,6 +14,7 @@ const {
 } = require("./matching");
 const { calculateSurgeMultiplier, distanceMeters } = require("./pricing");
 const { allocateEqualShares, isRidePassUsable, validatePaymentRequest } = require("./payments");
+const { getWeatherDemandForecast } = require("./weather");
 
 initializeApp();
 const googleMapsApiKey = defineSecret("GOOGLE_MAPS_API_KEY");
@@ -62,7 +63,10 @@ exports.getRideQuote = onCall({ secrets: [googleMapsApiKey] }, async (request) =
       Math.ceil(distanceMeters / 1000 * rateCard.perKilometerCents) +
       Math.ceil(durationSeconds / 60 * rateCard.perMinuteCents),
   );
-  const nearbyCounts = await getNearbyRideCounts(db, pickup);
+  const [nearbyCounts, weatherForecast] = await Promise.all([
+    getNearbyRideCounts(db, pickup),
+    getWeatherDemandForecast(pickup),
+  ]);
   const surgeMultiplier = calculateSurgeMultiplier(nearbyCounts.demandCount, nearbyCounts.availableDriverCount);
   const amountCents = Math.ceil(baseAmountCents * surgeMultiplier);
   const quoteRef = db.collection("users").doc(userId).collection("rideQuotes").doc();
@@ -75,6 +79,8 @@ exports.getRideQuote = onCall({ secrets: [googleMapsApiKey] }, async (request) =
     surgeMultiplier,
     demandCount: nearbyCounts.demandCount,
     availableDriverCount: nearbyCounts.availableDriverCount,
+    weatherCondition: weatherForecast.condition,
+    weatherDemandUpliftPercent: weatherForecast.demandUpliftPercent,
     currency: "USD",
     distanceMeters,
     durationSeconds,
@@ -89,6 +95,8 @@ exports.getRideQuote = onCall({ secrets: [googleMapsApiKey] }, async (request) =
     surgeMultiplier,
     demandCount: nearbyCounts.demandCount,
     availableDriverCount: nearbyCounts.availableDriverCount,
+    weatherCondition: weatherForecast.condition,
+    weatherDemandUpliftPercent: weatherForecast.demandUpliftPercent,
     currency: "USD",
     distanceMeters,
     durationSeconds,
@@ -215,6 +223,8 @@ exports.requestRide = onCall(async (request) => {
         surgeMultiplier: quote.get("surgeMultiplier"),
         demandCount: quote.get("demandCount"),
         availableDriverCount: quote.get("availableDriverCount"),
+        weatherCondition: quote.get("weatherCondition") || "UNAVAILABLE",
+        weatherDemandUpliftPercent: quote.get("weatherDemandUpliftPercent") || 0,
         currency: quote.get("currency"),
         distanceMeters: quote.get("distanceMeters"),
         durationSeconds: quote.get("durationSeconds"),

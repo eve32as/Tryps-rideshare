@@ -251,6 +251,8 @@ class FirebaseRideRepository(
             demandCount = (result["demandCount"] as? Number)?.toInt() ?: 0,
             availableDriverCount = (result["availableDriverCount"] as? Number)?.toInt() ?: 0,
             quoteId = result["quoteId"] as? String ?: error("Invalid quote response"),
+            weatherCondition = result["weatherCondition"] as? String ?: "UNAVAILABLE",
+            weatherDemandUpliftPercent = (result["weatherDemandUpliftPercent"] as? Number)?.toInt() ?: 0,
         )
     }
 
@@ -388,6 +390,8 @@ private fun Any?.toQuote(): RideQuote {
         surgeMultiplier = (map["surgeMultiplier"] as? Number)?.toDouble() ?: 1.0,
         demandCount = (map["demandCount"] as? Number)?.toInt() ?: 0,
         availableDriverCount = (map["availableDriverCount"] as? Number)?.toInt() ?: 0,
+        weatherCondition = map["weatherCondition"] as? String ?: "UNAVAILABLE",
+        weatherDemandUpliftPercent = (map["weatherDemandUpliftPercent"] as? Number)?.toInt() ?: 0,
     )
 }
 
