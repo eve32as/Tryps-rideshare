@@ -6,13 +6,14 @@ const RIDE_TYPES = Object.freeze({
   xl: { label: "XL", baseFareCents: 600, centsPerKm: 225 },
 });
 
-const PRICING_VERSION = 2;
+const PRICING_VERSION = 3;
 const BOOKING_FEE_CENTS = 150;
 const MINIMUM_FARE_CENTS = 500;
 const MAX_TRIP_DISTANCE_METERS = 200_000;
 const MIN_TRIP_DISTANCE_METERS = 50;
 const DRIVER_LOCATION_MAX_AGE_MS = 2 * 60 * 1000;
 const DRIVER_LOCATION_FUTURE_TOLERANCE_MS = 30 * 1000;
+const MAX_SURGE_MULTIPLIER = 1.5;
 
 function validCoordinate(value) {
   return value !== null &&
@@ -37,12 +38,15 @@ function distanceInKilometers(first, second) {
   return 6371 * 2 * Math.atan2(Math.sqrt(boundedValue), Math.sqrt(1 - boundedValue));
 }
 
-function calculateQuote(pickup, dropOff, rideType, routeDistanceMeters) {
+function calculateQuote(pickup, dropOff, rideType, routeDistanceMeters, surgeMultiplier = 1) {
   if (!validCoordinate(pickup) || !validCoordinate(dropOff)) {
     throw new TypeError("Pickup and drop-off must be valid coordinates.");
   }
   const type = RIDE_TYPES[rideType];
   if (!type) throw new TypeError("Unsupported ride type.");
+  if (![1, 1.25, MAX_SURGE_MULTIPLIER].includes(surgeMultiplier)) {
+    throw new RangeError("The demand multiplier is outside the supported range.");
+  }
 
   if (!Number.isSafeInteger(routeDistanceMeters) ||
       routeDistanceMeters < MIN_TRIP_DISTANCE_METERS ||
@@ -51,7 +55,11 @@ function calculateQuote(pickup, dropOff, rideType, routeDistanceMeters) {
   }
   const distanceKm = routeDistanceMeters / 1000;
   const distanceFareCents = Math.ceil(type.centsPerKm * routeDistanceMeters / 1000);
-  const fareBeforeMinimumCents = type.baseFareCents + distanceFareCents + BOOKING_FEE_CENTS;
+  const surgeAdjustmentCents = Math.ceil(
+    (type.baseFareCents + distanceFareCents) * (surgeMultiplier - 1)
+  );
+  const fareBeforeMinimumCents =
+    type.baseFareCents + distanceFareCents + surgeAdjustmentCents + BOOKING_FEE_CENTS;
   const minimumFareAdjustmentCents = Math.max(0, MINIMUM_FARE_CENTS - fareBeforeMinimumCents);
   return {
     rideType,
@@ -61,6 +69,8 @@ function calculateQuote(pickup, dropOff, rideType, routeDistanceMeters) {
     distanceKm: Math.round(distanceKm * 10) / 10,
     baseFareCents: type.baseFareCents,
     distanceFareCents,
+    surgeMultiplier,
+    surgeAdjustmentCents,
     bookingFeeCents: BOOKING_FEE_CENTS,
     minimumFareAdjustmentCents,
     amountCents: fareBeforeMinimumCents + minimumFareAdjustmentCents,
@@ -109,8 +119,19 @@ function matchesRidePreferences(driver, preferences = {}) {
     (!preferences.ecoFriendlyVehicle || driver.ecoFriendlyVehicle === true);
 }
 
-function rankNearbyDrivers(drivers, pickup, radiusKm, nowMillis, preferences = {}) {
+function calculateDemandSurgeMultiplier(demandCount, supplyCount) {
+  if (!Number.isSafeInteger(demandCount) || demandCount < 0 ||
+      !Number.isSafeInteger(supplyCount) || supplyCount < 0) {
+    throw new TypeError("Demand and supply counts must be non-negative integers.");
+  }
+  if (demandCount >= 4 && demandCount >= Math.max(1, supplyCount) * 2) return MAX_SURGE_MULTIPLIER;
+  if (demandCount >= 2 && demandCount >= Math.max(1, supplyCount)) return 1.25;
+  return 1;
+}
+
+function rankNearbyDrivers(drivers, pickup, radiusKm, nowMillis, preferences = {}, limit = 10) {
   if (!validCoordinate(pickup) || !Number.isFinite(radiusKm) || radiusKm <= 0) return [];
+  if (!Number.isSafeInteger(limit) || limit < 0) return [];
   return drivers
     .filter((driver) => driver.available === true && driver.verified === true &&
       matchesRidePreferences(driver, preferences) &&
@@ -119,11 +140,14 @@ function rankNearbyDrivers(drivers, pickup, radiusKm, nowMillis, preferences = {
     .map((driver) => ({
       ...driver,
       distanceKm: distanceInKilometers(pickup, driver.location),
+      estimatedPickupMinutes: distanceInKilometers(pickup, driver.location) / 25 * 60 +
+        Math.max(0, nowMillis - driver.locationUpdatedAtMillis) / 60_000 * 0.25,
     }))
     .filter((driver) => driver.distanceKm <= radiusKm)
     .sort((first, second) =>
+      first.estimatedPickupMinutes - second.estimatedPickupMinutes ||
       first.distanceKm - second.distanceKm || first.uid.localeCompare(second.uid))
-    .slice(0, 10);
+    .slice(0, limit);
 }
 
 function canTransitionRide(current, next) {
@@ -140,6 +164,7 @@ module.exports = {
   RIDE_TYPES,
   calculateQuote,
   canTransitionRide,
+  calculateDemandSurgeMultiplier,
   distanceInKilometers,
   isFreshDriverLocation,
   matchesRidePreferences,

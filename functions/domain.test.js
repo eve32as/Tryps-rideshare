@@ -6,6 +6,7 @@ const { geohashForLocation, geohashQueryBounds } = require("geofire-common");
 
 const {
   calculateQuote,
+  calculateDemandSurgeMultiplier,
   canTransitionRide,
   distanceInKilometers,
   isFreshDriverLocation,
@@ -32,17 +33,19 @@ test("calculates a server-owned fare quote for a supported ride", () => {
   );
   assert.equal(quote.rideType, "everyday");
   assert.equal(quote.currency, "usd");
-  assert.equal(quote.pricingVersion, 2);
+  assert.equal(quote.pricingVersion, 3);
   assert.equal(quote.routeDistanceMeters, 2_500);
   assert.equal(quote.distanceKm, 2.5);
   assert.equal(
     quote.amountCents,
     quote.baseFareCents + quote.distanceFareCents +
-      quote.bookingFeeCents + quote.minimumFareAdjustmentCents
+    quote.surgeAdjustmentCents + quote.bookingFeeCents + quote.minimumFareAdjustmentCents
   );
   assert.equal(quote.amountCents, 713);
   assert.equal(quote.baseFareCents, 250);
   assert.equal(quote.distanceFareCents, 313);
+  assert.equal(quote.surgeMultiplier, 1);
+  assert.equal(quote.surgeAdjustmentCents, 0);
   assert.equal(quote.bookingFeeCents, 150);
   assert.equal(quote.minimumFareAdjustmentCents, 0);
   assert.throws(
@@ -69,6 +72,19 @@ test("calculates a server-owned fare quote for a supported ride", () => {
   );
   assert.equal(minimumFare.amountCents, 500);
   assert.equal(minimumFare.minimumFareAdjustmentCents, 75);
+  const surgeFare = calculateQuote(
+    { latitude: 37.7749, longitude: -122.4194 },
+    { latitude: 37.784, longitude: -122.409 },
+    "everyday",
+    2_500,
+    1.5
+  );
+  assert.equal(surgeFare.surgeAdjustmentCents, 282);
+  assert.equal(surgeFare.amountCents, 995);
+  assert.throws(
+    () => calculateQuote({ latitude: 0, longitude: 0 }, { latitude: 0, longitude: 1 }, "everyday", 1000, 2),
+    RangeError
+  );
   assert.equal(
     calculateQuote({ latitude: 0, longitude: 0 }, { latitude: 0, longitude: 1 }, "comfort", 10_000).amountCents,
     2_300
@@ -77,6 +93,16 @@ test("calculates a server-owned fare quote for a supported ride", () => {
     calculateQuote({ latitude: 0, longitude: 0 }, { latitude: 0, longitude: 1 }, "xl", 10_000).amountCents,
     3_000
   );
+});
+
+test("applies capped surge tiers from local active demand and eligible driver supply", () => {
+  assert.equal(calculateDemandSurgeMultiplier(0, 0), 1);
+  assert.equal(calculateDemandSurgeMultiplier(1, 0), 1);
+  assert.equal(calculateDemandSurgeMultiplier(2, 2), 1.25);
+  assert.equal(calculateDemandSurgeMultiplier(4, 2), 1.5);
+  assert.equal(calculateDemandSurgeMultiplier(20, 1), 1.5);
+  assert.throws(() => calculateDemandSurgeMultiplier(-1, 0), TypeError);
+  assert.throws(() => calculateDemandSurgeMultiplier(1, 1.5), TypeError);
 });
 
 test("matches only verified, available, recently located drivers within radius", () => {
@@ -125,6 +151,29 @@ test("matches only verified, available, recently located drivers within radius",
   );
   assert.equal(isFreshDriverLocation(now + 20_000, now), true);
   assert.equal(isFreshDriverLocation(now + 31_000, now), false);
+});
+
+test("ranks fresh drivers by proximity with a small freshness penalty", () => {
+  const now = 1_800_000_000_000;
+  const pickup = { latitude: 37.7749, longitude: -122.4194 };
+  const nearButStale = {
+    uid: "near-but-stale",
+    available: true,
+    verified: true,
+    location: { latitude: 37.7839, longitude: -122.4194 },
+    locationUpdatedAtMillis: now - 120_000,
+  };
+  const slightlyFartherAndFresh = {
+    ...nearButStale,
+    uid: "farther-and-fresh",
+    location: { latitude: 37.7848, longitude: -122.4194 },
+    locationUpdatedAtMillis: now,
+  };
+  assert.deepEqual(
+    rankNearbyDrivers([nearButStale, slightlyFartherAndFresh], pickup, 15, now)
+      .map(({ uid }) => uid),
+    ["farther-and-fresh", "near-but-stale"]
+  );
 });
 
 test("matches only drivers that satisfy opted-in safety and eco preferences", () => {

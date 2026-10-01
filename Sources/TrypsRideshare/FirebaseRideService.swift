@@ -13,6 +13,8 @@ struct RideQuote: Identifiable {
     let distanceKm: Double
     let baseFareCents: Int
     let distanceFareCents: Int
+    let surgeMultiplier: Double
+    let surgeAdjustmentCents: Int
     let bookingFeeCents: Int
     let minimumFareAdjustmentCents: Int
     let estimatedDurationSeconds: Int
@@ -24,11 +26,15 @@ struct RideQuote: Identifiable {
     var formattedFareBreakdown: String {
         let base = (Double(baseFareCents) / 100).formatted(.currency(code: currency.uppercased()))
         let distance = (Double(distanceFareCents) / 100).formatted(.currency(code: currency.uppercased()))
+        let surge = (Double(surgeAdjustmentCents) / 100).formatted(.currency(code: currency.uppercased()))
         let booking = (Double(bookingFeeCents) / 100).formatted(.currency(code: currency.uppercased()))
+        let surgeLine = surgeAdjustmentCents > 0
+            ? " + \(surge) demand adjustment (\(surgeMultiplier.formatted(.number.precision(.fractionLength(2))))×)"
+            : ""
         let minimum = minimumFareAdjustmentCents > 0
             ? " · minimum fare adjustment \((Double(minimumFareAdjustmentCents) / 100).formatted(.currency(code: currency.uppercased())))"
             : ""
-        return "\(base) base + \(distance) route distance + \(booking) booking fee\(minimum)"
+        return "\(base) base + \(distance) route distance\(surgeLine) + \(booking) booking fee\(minimum)"
     }
 }
 
@@ -79,6 +85,8 @@ final class FirebaseRideStore: ObservableObject {
                       let distanceKm = values["distanceKm"] as? Double,
                       let baseFare = values["baseFareCents"] as? Int,
                       let distanceFare = values["distanceFareCents"] as? Int,
+                      let surgeMultiplier = values["surgeMultiplier"] as? Double,
+                      let surgeAdjustment = values["surgeAdjustmentCents"] as? Int,
                       let bookingFee = values["bookingFeeCents"] as? Int,
                       let minimumFareAdjustment = values["minimumFareAdjustmentCents"] as? Int,
                       let duration = values["estimatedDurationSeconds"] as? Int else {
@@ -93,6 +101,8 @@ final class FirebaseRideStore: ObservableObject {
                     distanceKm: distanceKm,
                     baseFareCents: baseFare,
                     distanceFareCents: distanceFare,
+                    surgeMultiplier: surgeMultiplier,
+                    surgeAdjustmentCents: surgeAdjustment,
                     bookingFeeCents: bookingFee,
                     minimumFareAdjustmentCents: minimumFareAdjustment,
                     estimatedDurationSeconds: duration
@@ -339,6 +349,8 @@ struct RideQuote: Identifiable {
     let distanceKm: Double
     let baseFareCents: Int
     let distanceFareCents: Int
+    let surgeMultiplier: Double
+    let surgeAdjustmentCents: Int
     let bookingFeeCents: Int
     let minimumFareAdjustmentCents: Int
     let estimatedDurationSeconds: Int
@@ -350,11 +362,15 @@ struct RideQuote: Identifiable {
     var formattedFareBreakdown: String {
         let base = (Double(baseFareCents) / 100).formatted(.currency(code: currency.uppercased()))
         let distance = (Double(distanceFareCents) / 100).formatted(.currency(code: currency.uppercased()))
+        let surge = (Double(surgeAdjustmentCents) / 100).formatted(.currency(code: currency.uppercased()))
         let booking = (Double(bookingFeeCents) / 100).formatted(.currency(code: currency.uppercased()))
+        let surgeLine = surgeAdjustmentCents > 0
+            ? " + \(surge) demand adjustment (\(surgeMultiplier.formatted(.number.precision(.fractionLength(2))))×)"
+            : ""
         let minimum = minimumFareAdjustmentCents > 0
             ? " · minimum adjustment \((Double(minimumFareAdjustmentCents) / 100).formatted(.currency(code: currency.uppercased())))"
             : ""
-        return "\(base) base + \(distance) route distance + \(booking) booking fee\(minimum)"
+        return "\(base) base + \(distance) route distance\(surgeLine) + \(booking) booking fee\(minimum)"
     }
 }
 

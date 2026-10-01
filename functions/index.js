@@ -14,6 +14,7 @@ const Stripe = require("stripe");
 const {
   RIDE_TYPES,
   calculateQuote,
+  calculateDemandSurgeMultiplier,
   canTransitionRide,
   isFreshDriverLocation,
   matchesRidePreferences,
@@ -28,6 +29,7 @@ initializeApp();
 const db = getFirestore();
 const REGION = "us-central1";
 const DRIVER_MATCH_RADIUS_KM = 15;
+const SURGE_SUPPLY_RADIUS_KM = 5;
 const GOOGLE_ROUTES_API_KEY = defineSecret("GOOGLE_ROUTES_API_KEY");
 const STRIPE_SECRET_KEY = defineSecret("STRIPE_SECRET_KEY");
 const STRIPE_WEBHOOK_SECRET = defineSecret("STRIPE_WEBHOOK_SECRET");
@@ -58,6 +60,50 @@ function requireAdmin(request) {
     throw new HttpsError("permission-denied", "Administrator access is required.");
   }
   return uid;
+}
+
+async function getLocalDemandAndSupply(pickup, preferences = {}) {
+  const demandZone = geohashForLocation([pickup.latitude, pickup.longitude]).slice(0, 5);
+  const demandQuery = db.collection("rides")
+    .where("demandZone", "==", demandZone)
+    .where("status", "in", ["searching_driver", "dispatching", "offered"])
+    .get();
+  const bounds = geohashQueryBounds(
+    [pickup.latitude, pickup.longitude],
+    SURGE_SUPPLY_RADIUS_KM * 1000
+  );
+  const supplyQueries = bounds.map(([start, end]) => db.collection("drivers")
+    .where("available", "==", true)
+    .orderBy("geohash")
+    .startAt(start)
+    .endAt(end)
+    .get());
+  const [demandSnapshot, ...supplySnapshots] = await Promise.all([demandQuery, ...supplyQueries]);
+  const driversById = new Map();
+  for (const snapshot of supplySnapshots) {
+    for (const document of snapshot.docs) driversById.set(document.id, document);
+  }
+  const now = Date.now();
+  const supplyCount = rankNearbyDrivers(
+    [...driversById.values()].map((document) => {
+      const data = document.data();
+      return {
+        uid: document.id,
+        available: data.available,
+        verified: data.verified,
+        acceptsWomenAndMinorsRides: data.acceptsWomenAndMinorsRides,
+        ecoFriendlyVehicle: data.ecoFriendlyVehicle,
+        location: data.location,
+        locationUpdatedAtMillis: data.locationUpdatedAt?.toMillis(),
+      };
+    }),
+    pickup,
+    SURGE_SUPPLY_RADIUS_KM,
+    now,
+    preferences,
+    Number.MAX_SAFE_INTEGER
+  ).length;
+  return { demandZone, demandCount: demandSnapshot.size, supplyCount };
 }
 
 async function createDriverOffers(rideId, ride) {
@@ -203,15 +249,32 @@ exports.createRideQuote = onCall({
     );
   }
 
+  let market;
+  try {
+    market = await getLocalDemandAndSupply(pickup);
+  } catch (error) {
+    logger.warn("Local demand and supply lookup failed", { error: error.message });
+    throw new HttpsError(
+      "unavailable",
+      "Current ride prices are unavailable. Please try again."
+    );
+  }
+  const surgeMultiplier = calculateDemandSurgeMultiplier(
+    market.demandCount,
+    market.supplyCount
+  );
   const quotes = rideTypes.map((rideType) => {
     let fare;
     try {
-      fare = calculateQuote(pickup, dropOff, rideType, route.distanceMeters);
+      fare = calculateQuote(pickup, dropOff, rideType, route.distanceMeters, surgeMultiplier);
     } catch (error) {
       throw new HttpsError("invalid-argument", error.message);
     }
     return {
       quoteId: randomUUID(),
+      demandZone: market.demandZone,
+      demandCount: market.demandCount,
+      supplyCount: market.supplyCount,
       ...fare,
       estimatedDurationSeconds: route.durationSeconds,
     };
@@ -261,9 +324,12 @@ exports.createRideBooking = onCall({ region: REGION }, async (request) => {
     if (quote.expiresAt.toMillis() <= Date.now()) {
       throw new HttpsError("deadline-exceeded", "The ride quote expired. Request a new quote.");
     }
-    if (quote.pricingVersion !== 2 ||
+    if (quote.pricingVersion !== 3 ||
         !Number.isSafeInteger(quote.routeDistanceMeters) ||
-        !Number.isSafeInteger(quote.estimatedDurationSeconds)) {
+        !Number.isSafeInteger(quote.estimatedDurationSeconds) ||
+        typeof quote.demandZone !== "string" ||
+        ![1, 1.25, 1.5].includes(quote.surgeMultiplier) ||
+        !Number.isSafeInteger(quote.surgeAdjustmentCents)) {
       throw new HttpsError("failed-precondition", "This quote uses outdated pricing. Request a new quote.");
     }
 
@@ -271,6 +337,7 @@ exports.createRideBooking = onCall({ region: REGION }, async (request) => {
       riderUid: uid,
       driverUid: null,
       quoteId,
+      demandZone: quote.demandZone,
       pickup: quote.pickup,
       dropOff: quote.dropOff,
       rideType: quote.rideType,
@@ -282,6 +349,8 @@ exports.createRideBooking = onCall({ region: REGION }, async (request) => {
       estimatedDurationSeconds: quote.estimatedDurationSeconds,
       baseFareCents: quote.baseFareCents,
       distanceFareCents: quote.distanceFareCents,
+      surgeMultiplier: quote.surgeMultiplier,
+      surgeAdjustmentCents: quote.surgeAdjustmentCents,
       bookingFeeCents: quote.bookingFeeCents,
       minimumFareAdjustmentCents: quote.minimumFareAdjustmentCents,
       amountCents: quote.amountCents,
