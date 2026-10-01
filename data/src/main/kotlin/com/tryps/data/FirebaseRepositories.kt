@@ -1,0 +1,228 @@
+package com.tryps.data
+
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.DocumentSnapshot
+import com.google.firebase.firestore.FieldValue
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.functions.FirebaseFunctions
+import com.tryps.domain.AccountRepository
+import com.tryps.domain.RideRepository
+import com.tryps.model.GeoPoint
+import com.tryps.model.Place
+import com.tryps.model.Ride
+import com.tryps.model.RideQuote
+import com.tryps.model.RideStatus
+import com.tryps.model.UserProfile
+import com.tryps.model.UserRole
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.tasks.await
+
+class FirebaseAccountRepository(
+    private val auth: FirebaseAuth,
+    private val firestore: FirebaseFirestore,
+) : AccountRepository {
+    override val currentUser: Flow<UserProfile?> = callbackFlow {
+        var profileListener: ListenerRegistration? = null
+        val listener = FirebaseAuth.AuthStateListener { source ->
+            profileListener?.remove()
+            profileListener = null
+            val firebaseUser = source.currentUser
+            if (firebaseUser == null) {
+                trySend(null)
+            } else {
+                profileListener = firestore.collection("users").document(firebaseUser.uid)
+                    .addSnapshotListener { snapshot, error ->
+                        if (error != null) close(error)
+                        else if (snapshot?.exists() == true) trySend(snapshot.toProfile(firebaseUser.email.orEmpty()))
+                    }
+            }
+        }
+        auth.addAuthStateListener(listener)
+        awaitClose {
+            profileListener?.remove()
+            auth.removeAuthStateListener(listener)
+        }
+    }
+
+    override suspend fun signIn(email: String, password: String) {
+        auth.signInWithEmailAndPassword(email.trim(), password).await()
+    }
+
+    override suspend fun register(name: String, email: String, password: String, role: UserRole) {
+        val user = auth.createUserWithEmailAndPassword(email.trim(), password).await().user
+            ?: error("Firebase did not create an account")
+        firestore.collection("users").document(user.uid).set(
+            mapOf(
+                "displayName" to name.trim(),
+                "email" to email.trim(),
+                "role" to role.name,
+                "rating" to 5.0,
+                "createdAt" to FieldValue.serverTimestamp(),
+            ),
+        ).await()
+    }
+
+    override suspend fun signOut() = auth.signOut()
+}
+
+class FirebaseRideRepository(
+    private val firestore: FirebaseFirestore,
+    private val functions: FirebaseFunctions,
+) : RideRepository {
+    private val rides: Flow<List<Ride>> = callbackFlow {
+        val listener = firestore.collection("rides").addSnapshotListener { snapshot, error ->
+            if (error != null) close(error) else trySend(snapshot?.documents.orEmpty().mapNotNull(DocumentSnapshot::toRide))
+        }
+        awaitClose { listener.remove() }
+    }
+
+    override suspend fun searchPlaces(query: String, near: GeoPoint?): List<Place> {
+        if (query.length < 2) return emptyList()
+        val payload = mutableMapOf<String, Any>("query" to query)
+        near?.let { payload["near"] = it.toMap() }
+        val result = functions.getHttpsCallable("searchPlaces").call(payload).await().getResult() as? Map<*, *>
+        val places = result?.get("places") as? List<*> ?: return emptyList()
+        return places.mapNotNull { value ->
+            val map = value as? Map<*, *> ?: return@mapNotNull null
+            Place(
+                name = map["name"] as? String ?: return@mapNotNull null,
+                address = map["address"] as? String ?: "",
+                location = map["location"].toGeoPoint(),
+            )
+        }
+    }
+
+    override fun observeActiveRide(userId: String, role: UserRole): Flow<Ride?> =
+        rides.map { current ->
+            current.firstOrNull {
+                (if (role == UserRole.RIDER) it.riderId == userId else it.driverId == userId) &&
+                    it.status !in setOf(RideStatus.COMPLETED, RideStatus.CANCELLED)
+            }
+        }
+
+    override fun observeHistory(userId: String, role: UserRole): Flow<List<Ride>> = rides.map { current ->
+        current.filter {
+            (if (role == UserRole.RIDER) it.riderId == userId else it.driverId == userId) &&
+                it.status in setOf(RideStatus.COMPLETED, RideStatus.CANCELLED)
+        }.sortedByDescending(Ride::createdAtEpochMillis)
+    }
+
+    override fun observeOpenRides(): Flow<List<Ride>> = rides.map { current ->
+        current.filter { it.status == RideStatus.SEARCHING }.sortedBy(Ride::createdAtEpochMillis)
+    }
+
+    override suspend fun quote(pickup: Place, destination: Place): RideQuote {
+        val result = functions.getHttpsCallable("getRideQuote").call(
+            mapOf("pickup" to pickup.location.toMap(), "destination" to destination.location.toMap()),
+        ).await().getResult() as? Map<*, *> ?: error("Invalid quote response")
+        return RideQuote(
+            amountCents = (result["amountCents"] as Number).toInt(),
+            currency = result["currency"] as? String ?: "USD",
+            distanceMeters = (result["distanceMeters"] as Number).toInt(),
+            durationSeconds = (result["durationSeconds"] as Number).toInt(),
+        )
+    }
+
+    override suspend fun request(rider: UserProfile, pickup: Place, destination: Place, quote: RideQuote) {
+        val document = firestore.collection("rides").document()
+        document.set(
+            mapOf(
+                "riderId" to rider.id,
+                "riderName" to rider.displayName,
+                "pickup" to pickup.toMap(),
+                "destination" to destination.toMap(),
+                "quote" to quote.toMap(),
+                "status" to RideStatus.SEARCHING.name,
+                "createdAt" to FieldValue.serverTimestamp(),
+                "createdAtEpochMillis" to System.currentTimeMillis(),
+            ),
+        ).await()
+    }
+
+    override suspend fun accept(rideId: String, driver: UserProfile) {
+        firestore.runTransaction { transaction ->
+            val reference = firestore.collection("rides").document(rideId)
+            check(transaction.get(reference).getString("status") == RideStatus.SEARCHING.name) { "Ride is no longer available" }
+            transaction.update(reference, mapOf("driverId" to driver.id, "driverName" to driver.displayName, "status" to RideStatus.ACCEPTED.name))
+        }.await()
+    }
+
+    override suspend fun updateStatus(rideId: String, status: RideStatus) {
+        firestore.collection("rides").document(rideId).update("status", status.name).await()
+    }
+
+    override suspend fun updateDriverLocation(driverId: String, location: GeoPoint, available: Boolean) {
+        firestore.collection("drivers").document(driverId).set(
+            mapOf("location" to location.toMap(), "available" to available, "updatedAt" to FieldValue.serverTimestamp()),
+        ).await()
+        val activeRides = firestore.collection("rides").whereEqualTo("driverId", driverId).get().await()
+        activeRides.documents
+            .filter { enumValueOrDefault(it.getString("status"), RideStatus.COMPLETED) !in setOf(RideStatus.COMPLETED, RideStatus.CANCELLED) }
+            .forEach { it.reference.update("driverLocation", location.toMap()).await() }
+    }
+
+    override suspend fun cancel(rideId: String) = updateStatus(rideId, RideStatus.CANCELLED)
+
+    override suspend fun rate(rideId: String, rating: Int) {
+        firestore.collection("rides").document(rideId).update("rating", rating.coerceIn(1, 5)).await()
+    }
+
+}
+
+private fun DocumentSnapshot.toProfile(fallbackEmail: String) = UserProfile(
+    id = id,
+    displayName = getString("displayName").orEmpty(),
+    email = getString("email") ?: fallbackEmail,
+    phone = getString("phone").orEmpty(),
+    role = enumValueOrDefault(getString("role"), UserRole.RIDER),
+    vehicle = getString("vehicle").orEmpty(),
+    rating = getDouble("rating") ?: 5.0,
+)
+
+private fun DocumentSnapshot.toRide(): Ride? = runCatching {
+    Ride(
+        id = id,
+        riderId = getString("riderId").orEmpty(),
+        driverId = getString("driverId"),
+        riderName = getString("riderName").orEmpty(),
+        driverName = getString("driverName").orEmpty(),
+        driverLocation = get("driverLocation")?.toGeoPoint(),
+        pickup = get("pickup").toPlace(),
+        destination = get("destination").toPlace(),
+        quote = get("quote").toQuote(),
+        status = enumValueOrDefault(getString("status"), RideStatus.SEARCHING),
+        createdAtEpochMillis = getLong("createdAtEpochMillis") ?: 0,
+        rating = getLong("rating")?.toInt(),
+    )
+}.getOrNull()
+
+private fun Place.toMap() = mapOf("name" to name, "address" to address, "location" to location.toMap())
+private fun GeoPoint.toMap() = mapOf("latitude" to latitude, "longitude" to longitude)
+private fun RideQuote.toMap() = mapOf("amountCents" to amountCents, "currency" to currency, "distanceMeters" to distanceMeters, "durationSeconds" to durationSeconds)
+
+private fun Any?.toPlace(): Place {
+    val map = this as? Map<*, *> ?: return Place()
+    return Place(map["name"] as? String ?: "", map["address"] as? String ?: "", map["location"].toGeoPoint())
+}
+
+private fun Any?.toGeoPoint(): GeoPoint {
+    val map = this as? Map<*, *> ?: return GeoPoint()
+    return GeoPoint((map["latitude"] as? Number)?.toDouble() ?: 0.0, (map["longitude"] as? Number)?.toDouble() ?: 0.0)
+}
+
+private fun Any?.toQuote(): RideQuote {
+    val map = this as? Map<*, *> ?: return RideQuote()
+    return RideQuote(
+        (map["amountCents"] as? Number)?.toInt() ?: 0,
+        map["currency"] as? String ?: "USD",
+        (map["distanceMeters"] as? Number)?.toInt() ?: 0,
+        (map["durationSeconds"] as? Number)?.toInt() ?: 0,
+    )
+}
+
+private inline fun <reified T : Enum<T>> enumValueOrDefault(value: String?, fallback: T): T =
+    enumValues<T>().firstOrNull { it.name == value } ?: fallback
