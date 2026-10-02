@@ -24,6 +24,7 @@ const {
   normalizeDriverRidePreferences,
   normalizeRidePreferences,
   rankNearbyDrivers,
+  riderVisibleDriverProfile,
   validCoordinate,
 } = require("./domain");
 const { RouteLookupError, getDrivingRoute } = require("./routes");
@@ -490,6 +491,8 @@ exports.cancelRideBooking = onCall({
     transaction.update(rideRef, {
       status: "cancelled",
       paymentStatus: paymentStatus === "succeeded" ? "refund_pending" : paymentStatus,
+      driverLocation: FieldValue.delete(),
+      driverLocationUpdatedAt: FieldValue.delete(),
       updatedAt: FieldValue.serverTimestamp(),
     });
     reads.slice(0, offerRefs.length).forEach((offer) => {
@@ -776,16 +779,29 @@ exports.updateDriverLocation = onCall({ region: REGION }, async (request) => {
   }
 
   const driverRef = db.collection("drivers").doc(uid);
-  let updated = false;
   const withinServiceArea = isWithinServiceArea(location);
-  await db.runTransaction(async (transaction) => {
+  const transactionResult = await db.runTransaction(async (transaction) => {
     const snapshot = await transaction.get(driverRef);
-    if (!snapshot.exists || snapshot.data().verified !== true || snapshot.data().available !== true) {
+    if (!snapshot.exists || snapshot.data().verified !== true) {
       throw new HttpsError("failed-precondition", "Go online to update your driver location.");
+    }
+    let activeRidesSnapshot;
+    if (!snapshot.data().available) {
+      activeRidesSnapshot = await transaction.get(
+        db.collection("rides").where("driverUid", "==", uid).limit(10)
+      );
+      const hasActiveRide = activeRidesSnapshot.docs.some((ride) =>
+        ["driver_assigned", "en_route", "arrived", "in_progress"].includes(ride.data().status)
+      );
+      if (!hasActiveRide) {
+        throw new HttpsError("failed-precondition", "Go online to update your driver location.");
+      }
     }
     const lastUpdatedAt = snapshot.data().locationUpdatedAt?.toMillis();
     if (withinServiceArea && Number.isFinite(lastUpdatedAt) &&
-        Date.now() - lastUpdatedAt < 10_000) return;
+        Date.now() - lastUpdatedAt < 10_000) {
+      return { updated: false, activeRidesSnapshot };
+    }
     transaction.update(driverRef, {
       location,
       geohash: geohashForLocation([location.latitude, location.longitude]),
@@ -793,10 +809,29 @@ exports.updateDriverLocation = onCall({ region: REGION }, async (request) => {
       ...(!withinServiceArea ? { available: false } : {}),
       updatedAt: FieldValue.serverTimestamp(),
     });
-    updated = true;
+    return { updated: true, activeRidesSnapshot };
   });
+  if (transactionResult.updated) {
+    const activeRides = transactionResult.activeRidesSnapshot ?? await db.collection("rides")
+      .where("driverUid", "==", uid)
+      .limit(10)
+      .get();
+    const activeStatuses = new Set(["driver_assigned", "en_route", "arrived", "in_progress"]);
+    await Promise.all(activeRides.docs
+      .filter((ride) => activeStatuses.has(ride.data().status))
+      .map((ride) => db.runTransaction(async (transaction) => {
+        const currentRide = await transaction.get(ride.ref);
+        if (!currentRide.exists ||
+            currentRide.data().driverUid !== uid ||
+            !activeStatuses.has(currentRide.data().status)) return;
+        transaction.update(ride.ref, {
+          driverLocation: location,
+          driverLocationUpdatedAt: FieldValue.serverTimestamp(),
+        });
+      })));
+  }
   return {
-    updated,
+    updated: transactionResult.updated,
     withinServiceArea,
     available: withinServiceArea,
   };
@@ -848,6 +883,9 @@ exports.claimRideOffer = onCall({ region: REGION }, async (request) => {
     transaction.update(rideRef, {
       status: "driver_assigned",
       driverUid: uid,
+      driverInfo: riderVisibleDriverProfile(driverSnapshot.data()),
+      driverLocation: driverSnapshot.data().location,
+      driverLocationUpdatedAt: FieldValue.serverTimestamp(),
       assignedAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
@@ -880,6 +918,10 @@ exports.updateRideStatus = onCall({ region: REGION }, async (request) => {
     }
     transaction.update(rideRef, {
       status: nextStatus,
+      ...(nextStatus === "completed" ? {
+        driverLocation: FieldValue.delete(),
+        driverLocationUpdatedAt: FieldValue.delete(),
+      } : {}),
       updatedAt: FieldValue.serverTimestamp(),
       ...(nextStatus === "completed" ? { completedAt: FieldValue.serverTimestamp() } : {}),
     });

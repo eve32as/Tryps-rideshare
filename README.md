@@ -50,7 +50,7 @@ gcloud auth application-default login
 GCLOUD_PROJECT=YOUR_FIREBASE_PROJECT_ID node functions/scripts/grant-admin.js FIREBASE_AUTH_UID
 ```
 
-After adding the claim, sign out and back in or use **Refresh account access** in the profile. An administrator client can then call `approveDriverApplication` with the pending driver's UID. Approved drivers must allow foreground location and keep the driver screen open while online; location refreshes every minute, and locations older than two minutes are excluded from offers.
+After adding the claim, sign out and back in or use **Refresh account access** in the profile. An administrator client can then call `approveDriverApplication` with the pending driver's UID. Approved drivers must allow foreground location and keep the driver screen open while online; location refreshes every minute, and locations older than two minutes are excluded from offers. During an assigned trip, the authenticated driver location is also copied to that ride for its rider, along with the approved driver's name, vehicle description, and license plate. The rider can see these details and the driver's latest position until the ride is cancelled or completed; live coordinates are then removed from the ride.
 
 ### Driver turn-by-turn and CarPlay
 

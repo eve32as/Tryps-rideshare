@@ -18,6 +18,7 @@ const {
   normalizeDriverRidePreferences,
   normalizeRidePreferences,
   rankNearbyDrivers,
+  riderVisibleDriverProfile,
   validCoordinate,
 } = require("./domain");
 
@@ -26,6 +27,22 @@ test("validates coordinates and rejects values outside geographic bounds", () =>
   assert.equal(validCoordinate({ latitude: 91, longitude: 0 }), false);
   assert.equal(validCoordinate({ latitude: 0, longitude: Infinity }), false);
   assert.equal(validCoordinate(null), false);
+});
+
+test("projects only rider-facing driver identity fields", () => {
+  assert.deepEqual(riderVisibleDriverProfile({
+    displayName: "  Alex Driver ",
+    vehicleDescription: "  Blue sedan ",
+    licensePlate: "  ABC123 ",
+    uid: "private-driver-id",
+    location: { latitude: 37.77, longitude: -122.42 },
+    verified: true,
+  }), {
+    displayName: "Alex Driver",
+    vehicleDescription: "Blue sedan",
+    licensePlate: "ABC123",
+  });
+  assert.equal(riderVisibleDriverProfile({ displayName: "Alex" }), null);
 });
 
 test("enforces the configured San Francisco service-area geofence", () => {

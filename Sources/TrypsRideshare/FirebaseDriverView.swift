@@ -427,8 +427,8 @@ struct FirebaseDriverView: View {
         .onChange(of: driver.activeRideId) { _, _ in
             startNavigationIfNeeded()
         }
-        .task(id: driver.isAvailable) {
-            guard driver.isAvailable else {
+        .task(id: "\(driver.isAvailable)-\(driver.activeRideId ?? "none")") {
+            guard driver.isAvailable || driver.activeRideId != nil else {
                 locationManager.stopUpdatingLocation()
                 return
             }
@@ -439,7 +439,7 @@ struct FirebaseDriverView: View {
                    abs(Date().timeIntervalSince(location.timestamp)) <= 120 {
                     await driver.updateLocation(location.coordinate)
                 }
-                if Date().timeIntervalSince(lastDemandRefresh) >= 300 {
+                if driver.isAvailable && Date().timeIntervalSince(lastDemandRefresh) >= 300 {
                     await driver.refreshDemandHeatmap()
                     lastDemandRefresh = Date()
                 }

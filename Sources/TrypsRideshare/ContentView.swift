@@ -122,6 +122,31 @@ struct ContentView: View {
         (coordinate * 10_000).rounded() / 10_000
     }
 
+    private var isTrackingDriver: Bool {
+        ["driver_assigned", "en_route", "arrived", "in_progress"].contains(rideStore.rideStatus ?? "")
+    }
+
+    private func centerOnLiveTrip() {
+        guard isTrackingDriver, let driverLocation = rideStore.driverLocation else { return }
+        let coordinates = [pickupCoordinate, destination.coordinate, driverLocation].compactMap { $0 }
+        guard let minimumLatitude = coordinates.map(\.latitude).min(),
+              let maximumLatitude = coordinates.map(\.latitude).max(),
+              let minimumLongitude = coordinates.map(\.longitude).min(),
+              let maximumLongitude = coordinates.map(\.longitude).max() else { return }
+        cameraPosition = .region(
+            MKCoordinateRegion(
+                center: CLLocationCoordinate2D(
+                    latitude: (minimumLatitude + maximumLatitude) / 2,
+                    longitude: (minimumLongitude + maximumLongitude) / 2
+                ),
+                span: MKCoordinateSpan(
+                    latitudeDelta: max((maximumLatitude - minimumLatitude) * 1.4, 0.015),
+                    longitudeDelta: max((maximumLongitude - minimumLongitude) * 1.4, 0.015)
+                )
+            )
+        )
+    }
+
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .top) {
@@ -129,7 +154,8 @@ struct ContentView: View {
                     cameraPosition: $cameraPosition,
                     pickup: pickupCoordinate,
                     destination: destination.coordinate,
-                    route: route
+                    route: route,
+                    driverLocation: isTrackingDriver ? rideStore.driverLocation : nil
                 )
                     .frame(height: geometry.size.height * TrypsLayout.mapBackdropHeightFraction)
                     .ignoresSafeArea(edges: .top)
@@ -154,6 +180,12 @@ struct ContentView: View {
         }
         .task(id: routeRequestID) {
             await calculateRoute()
+        }
+        .onChange(of: rideStore.driverLocation?.latitude) { _, _ in
+            centerOnLiveTrip()
+        }
+        .onChange(of: rideStore.rideStatus) { _, _ in
+            centerOnLiveTrip()
         }
         .sheet(item: $editingStop) { stop in
             DestinationPicker(
@@ -592,6 +624,21 @@ struct ContentView: View {
                     .font(.footnote)
                     .foregroundStyle(TrypsStyle.muted)
             }
+            if ["driver_assigned", "en_route", "arrived", "in_progress"].contains(rideStore.rideStatus ?? "") {
+                if let driverInfo = rideStore.driverInfo {
+                    Label(driverInfo.displayName, systemImage: "person.crop.circle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(TrypsStyle.ink)
+                    Text("\(driverInfo.vehicleDescription) · \(driverInfo.licensePlate)")
+                        .font(.footnote)
+                        .foregroundStyle(TrypsStyle.muted)
+                }
+                if let updatedAt = rideStore.driverLocationUpdatedAt {
+                    Text("Driver location updated \(updatedAt, style: .relative)")
+                        .font(.caption)
+                        .foregroundStyle(TrypsStyle.muted)
+                }
+            }
             if ["awaiting_payment", "searching_driver", "offered", "driver_assigned", "en_route"].contains(rideStore.rideStatus ?? "") {
                 Button("Cancel ride", role: .destructive) {
                     Task { await rideStore.cancelRide() }
@@ -823,6 +870,7 @@ private struct RideMapView: View {
     let pickup: CLLocationCoordinate2D?
     let destination: CLLocationCoordinate2D
     let route: MKRoute?
+    let driverLocation: CLLocationCoordinate2D?
 
     var body: some View {
         Map(position: $cameraPosition) {
@@ -841,6 +889,12 @@ private struct RideMapView: View {
             if let route {
                 MapPolyline(route.polyline)
                     .stroke(TrypsStyle.green, lineWidth: 5)
+            }
+            if let driverLocation {
+                Annotation("Your driver", coordinate: driverLocation) {
+                    mapMarker(symbol: "car.side.fill", tint: Color(red: 0.25, green: 0.39, blue: 0.76))
+                }
+                .annotationTitles(.hidden)
             }
             UserAnnotation()
         }

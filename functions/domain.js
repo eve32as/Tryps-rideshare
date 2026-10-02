@@ -228,6 +228,19 @@ function canTransitionRide(current, next) {
   return transitions[current]?.includes(next) ?? false;
 }
 
+function riderVisibleDriverProfile(driver) {
+  if (!driver || typeof driver !== "object") return null;
+  const displayName = typeof driver.displayName === "string" ? driver.displayName.trim() : "";
+  const vehicleDescription = typeof driver.vehicleDescription === "string"
+    ? driver.vehicleDescription.trim()
+    : "";
+  const licensePlate = typeof driver.licensePlate === "string"
+    ? driver.licensePlate.trim()
+    : "";
+  if (!displayName || !vehicleDescription || !licensePlate) return null;
+  return { displayName, vehicleDescription, licensePlate };
+}
+
 module.exports = {
   RIDE_TYPES,
   calculateQuote,
@@ -243,5 +256,6 @@ module.exports = {
   normalizeDriverRidePreferences,
   normalizeRidePreferences,
   rankNearbyDrivers,
+  riderVisibleDriverProfile,
   validCoordinate,
 };

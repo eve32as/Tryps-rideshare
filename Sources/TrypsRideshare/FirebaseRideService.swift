@@ -44,6 +44,12 @@ struct RidePaymentSession: Identifiable {
     let publishableKey: String
 }
 
+struct RiderDriverInfo {
+    let displayName: String
+    let vehicleDescription: String
+    let licensePlate: String
+}
+
 @MainActor
 final class FirebaseRideStore: ObservableObject {
     static let shared = FirebaseRideStore()
@@ -54,6 +60,9 @@ final class FirebaseRideStore: ObservableObject {
     @Published private(set) var rideStatus: String?
     @Published private(set) var paymentStatus: String?
     @Published private(set) var dispatchMessage: String?
+    @Published private(set) var driverInfo: RiderDriverInfo?
+    @Published private(set) var driverLocation: CLLocationCoordinate2D?
+    @Published private(set) var driverLocationUpdatedAt: Date?
     @Published private(set) var isWorking = false
     @Published var errorMessage: String?
 
@@ -205,6 +214,9 @@ final class FirebaseRideStore: ObservableObject {
         rideStatus = nil
         paymentStatus = nil
         dispatchMessage = nil
+        driverInfo = nil
+        driverLocation = nil
+        driverLocationUpdatedAt = nil
         quotes = [:]
         errorMessage = nil
     }
@@ -217,6 +229,27 @@ final class FirebaseRideStore: ObservableObject {
                 let status = data?["status"] as? String
                 let paymentStatus = data?["paymentStatus"] as? String
                 let message = data?["dispatchMessage"] as? String
+                let driverValues = data?["driverInfo"] as? [String: Any]
+                let driverInfo = driverValues.flatMap { values -> RiderDriverInfo? in
+                    guard let displayName = values["displayName"] as? String,
+                          let vehicleDescription = values["vehicleDescription"] as? String,
+                          let licensePlate = values["licensePlate"] as? String else { return nil }
+                    return RiderDriverInfo(
+                        displayName: displayName,
+                        vehicleDescription: vehicleDescription,
+                        licensePlate: licensePlate
+                    )
+                }
+                let locationValues = data?["driverLocation"] as? [String: Any]
+                let driverLocation: CLLocationCoordinate2D? = {
+                    guard let latitude = (locationValues?["latitude"] as? NSNumber)?.doubleValue,
+                          let longitude = (locationValues?["longitude"] as? NSNumber)?.doubleValue else {
+                        return nil
+                    }
+                    let coordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+                    return CLLocationCoordinate2DIsValid(coordinate) ? coordinate : nil
+                }()
+                let locationUpdatedAt = (data?["driverLocationUpdatedAt"] as? Timestamp)?.dateValue()
                 Task { @MainActor in
                     guard let self else { return }
                     if error != nil {
@@ -225,6 +258,9 @@ final class FirebaseRideStore: ObservableObject {
                     self.rideStatus = status
                     self.paymentStatus = paymentStatus
                     self.dispatchMessage = message
+                    self.driverInfo = driverInfo
+                    self.driverLocation = driverLocation
+                    self.driverLocationUpdatedAt = locationUpdatedAt
                 }
             }
     }
