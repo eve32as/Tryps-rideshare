@@ -14,6 +14,7 @@ const {
 } = require("./matching");
 const { calculateSurgeMultiplier, distanceMeters } = require("./pricing");
 const { allocateEqualShares, isRidePassUsable, validatePaymentRequest } = require("./payments");
+const { canAccessRideSafetyAlert, canResolveSafetyAlert, canTriggerSafetyAlert } = require("./safety");
 const { getWeatherDemandForecast } = require("./weather");
 
 initializeApp();
@@ -263,6 +264,58 @@ exports.confirmCashPayment = onCall(async (request) => {
     });
   });
   return { received: true };
+});
+
+exports.reportSafetyAlert = onCall(async (request) => {
+  requireAuthentication(request);
+  const userId = request.auth.uid;
+  const rideId = request.data?.rideId;
+  if (typeof rideId !== "string" || !rideId) throw new HttpsError("invalid-argument", "A ride ID is required");
+  const location = parsePoint(request.data?.location);
+  const rideRef = getFirestore().collection("rides").doc(rideId);
+  await getFirestore().runTransaction(async (transaction) => {
+    const ride = await transaction.get(rideRef);
+    const rideData = ride.data();
+    if (!ride.exists || !canAccessRideSafetyAlert(rideData, userId)) {
+      throw new HttpsError("permission-denied", "Only ride participants can trigger an SOS alert");
+    }
+    if (!canTriggerSafetyAlert(rideData, userId)) {
+      throw new HttpsError("failed-precondition", "SOS alerts are available during an active ride without another open alert");
+    }
+    transaction.update(rideRef, {
+      safetyAlert: {
+        status: "ACTIVE",
+        triggeredBy: userId,
+        location,
+        createdAt: Timestamp.now(),
+      },
+    });
+  });
+  return { reported: true };
+});
+
+exports.resolveSafetyAlert = onCall(async (request) => {
+  requireAuthentication(request);
+  const userId = request.auth.uid;
+  const rideId = request.data?.rideId;
+  if (typeof rideId !== "string" || !rideId) throw new HttpsError("invalid-argument", "A ride ID is required");
+  const rideRef = getFirestore().collection("rides").doc(rideId);
+  await getFirestore().runTransaction(async (transaction) => {
+    const ride = await transaction.get(rideRef);
+    const rideData = ride.data();
+    if (!ride.exists || !canAccessRideSafetyAlert(rideData, userId)) {
+      throw new HttpsError("permission-denied", "Only ride participants can resolve an SOS alert");
+    }
+    if (!canResolveSafetyAlert(rideData, userId)) {
+      throw new HttpsError("failed-precondition", "There is no active SOS alert to resolve");
+    }
+    transaction.update(rideRef, {
+      "safetyAlert.status": "RESOLVED",
+      "safetyAlert.resolvedBy": userId,
+      "safetyAlert.resolvedAt": Timestamp.now(),
+    });
+  });
+  return { resolved: true };
 });
 
 exports.issueRidePass = onCall(async (request) => {

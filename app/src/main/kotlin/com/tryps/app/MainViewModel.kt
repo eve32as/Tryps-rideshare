@@ -202,6 +202,18 @@ class MainViewModel(
         action { rides.confirmCashPayment(rideId, driver.id) }
     }
 
+    fun reportSafetyAlert(rideId: String) {
+        val user = state.value.user ?: return
+        val location = state.value.currentLocation
+            ?: return showError("Current location is unavailable; enable location before sending SOS")
+        action { rides.reportSafetyAlert(rideId, user.id, location) }
+    }
+
+    fun resolveSafetyAlert(rideId: String) {
+        val user = state.value.user ?: return
+        action { rides.resolveSafetyAlert(rideId, user.id) }
+    }
+
     fun clearError() = mutableState.update { it.copy(error = null) }
 
     private fun observeUserData(user: UserProfile?) {

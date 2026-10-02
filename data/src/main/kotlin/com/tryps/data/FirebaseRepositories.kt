@@ -19,6 +19,7 @@ import com.tryps.model.RidePaymentShare
 import com.tryps.model.RidePaymentStatus
 import com.tryps.model.RideQuote
 import com.tryps.model.RideStatus
+import com.tryps.model.RideSafetyAlert
 import com.tryps.model.UserProfile
 import com.tryps.model.UserRole
 import com.tryps.model.VehicleCategory
@@ -286,6 +287,18 @@ class FirebaseRideRepository(
             .await()
     }
 
+    override suspend fun reportSafetyAlert(rideId: String, userId: String, location: GeoPoint) {
+        functions.getHttpsCallable("reportSafetyAlert")
+            .call(mapOf("rideId" to rideId, "location" to location.toMap()))
+            .await()
+    }
+
+    override suspend fun resolveSafetyAlert(rideId: String, userId: String) {
+        functions.getHttpsCallable("resolveSafetyAlert")
+            .call(mapOf("rideId" to rideId))
+            .await()
+    }
+
     override suspend fun accept(rideId: String, driver: UserProfile) {
         functions.getHttpsCallable("acceptRide")
             .call(mapOf("rideId" to rideId, "driverId" to driver.id))
@@ -364,6 +377,7 @@ private fun DocumentSnapshot.toRide(): Ride? = runCatching {
             enumValueOrDefault(it, VehicleCategory.STANDARD)
         } ?: VehicleCategory.ANY,
         payment = get("payment").toRidePayment(),
+        safetyAlert = get("safetyAlert").toRideSafetyAlert(),
     )
 }.getOrNull()
 
@@ -412,6 +426,18 @@ private fun Any?.toRidePayment(): RidePayment {
         amountCents = (map["amountCents"] as? Number)?.toInt() ?: 0,
         passId = map["passId"] as? String,
         splits = splits,
+    )
+}
+
+private fun Any?.toRideSafetyAlert(): RideSafetyAlert? {
+    val map = this as? Map<*, *> ?: return null
+    val location = map["location"] as? Map<*, *> ?: return null
+    return RideSafetyAlert(
+        status = map["status"] as? String ?: "ACTIVE",
+        triggeredBy = map["triggeredBy"] as? String ?: "",
+        location = location.toGeoPoint(),
+        createdAtEpochMillis = (map["createdAt"] as? com.google.firebase.Timestamp)?.toDate()?.time ?: 0,
+        resolvedBy = map["resolvedBy"] as? String,
     )
 }
 

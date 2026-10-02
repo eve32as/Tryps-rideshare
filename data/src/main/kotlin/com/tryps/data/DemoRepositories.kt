@@ -12,6 +12,7 @@ import com.tryps.model.RidePaymentShare
 import com.tryps.model.RidePaymentStatus
 import com.tryps.model.RideQuote
 import com.tryps.model.RideStatus
+import com.tryps.model.RideSafetyAlert
 import com.tryps.model.UserProfile
 import com.tryps.model.UserRole
 import com.tryps.model.VehicleCategory
@@ -165,6 +166,25 @@ class DemoRideRepository : RideRepository {
                 splits = ride.payment.splits.map { it.copy(status = RidePaymentStatus.RECEIVED) },
             ),
         )
+    }
+
+    override suspend fun reportSafetyAlert(rideId: String, userId: String, location: GeoPoint) = update(rideId) { ride ->
+        require(rideId.isNotBlank() && (ride.riderId == userId || ride.driverId == userId))
+        require(ride.status in setOf(RideStatus.ACCEPTED, RideStatus.DRIVER_ARRIVING, RideStatus.IN_PROGRESS))
+        require(ride.safetyAlert?.status != "ACTIVE")
+        ride.copy(
+            safetyAlert = RideSafetyAlert(
+                triggeredBy = userId,
+                location = location,
+                createdAtEpochMillis = System.currentTimeMillis(),
+            ),
+        )
+    }
+
+    override suspend fun resolveSafetyAlert(rideId: String, userId: String) = update(rideId) { ride ->
+        require(ride.riderId == userId || ride.driverId == userId)
+        require(ride.safetyAlert?.status == "ACTIVE")
+        ride.copy(safetyAlert = ride.safetyAlert.copy(status = "RESOLVED", resolvedBy = userId))
     }
 
     override suspend fun updateDriverLocation(driverId: String, location: GeoPoint, available: Boolean) {

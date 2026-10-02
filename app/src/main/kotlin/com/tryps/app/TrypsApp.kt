@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -191,6 +192,7 @@ private fun RiderScreen(state: MainUiState, viewModel: MainViewModel) {
             state.activeRide,
             driver = false,
             isRideOwner = state.user?.id == state.activeRide.riderId,
+            currentUserId = state.user?.id.orEmpty(),
             viewModel = viewModel,
         )
         return
@@ -413,7 +415,7 @@ private fun PlaceField(label: String, value: String, onChange: (String) -> Unit,
 @Composable
 private fun DriverScreen(state: MainUiState, viewModel: MainViewModel) {
     state.activeRide?.let {
-        ActiveRideScreen(it, true, false, viewModel)
+        ActiveRideScreen(it, true, false, state.user?.id.orEmpty(), viewModel)
         return
     }
     Column(Modifier.fillMaxSize().padding(16.dp)) {
@@ -460,7 +462,37 @@ private fun DriverScreen(state: MainUiState, viewModel: MainViewModel) {
 }
 
 @Composable
-private fun ActiveRideScreen(ride: Ride, driver: Boolean, isRideOwner: Boolean, viewModel: MainViewModel) {
+private fun ActiveRideScreen(
+    ride: Ride,
+    driver: Boolean,
+    isRideOwner: Boolean,
+    currentUserId: String,
+    viewModel: MainViewModel,
+) {
+    var confirmSafetyAlert by remember(ride.id) { mutableStateOf(false) }
+    if (confirmSafetyAlert) {
+        AlertDialog(
+            onDismissRequest = { confirmSafetyAlert = false },
+            title = { Text("Send SOS alert?") },
+            text = {
+                Text(
+                    "Your latest available location and SOS status will be shared with the other person on this ride. " +
+                        "This does not contact emergency services; call your local emergency number if you are in immediate danger.",
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmSafetyAlert = false
+                        viewModel.reportSafetyAlert(ride.id)
+                    },
+                ) { Text("Send SOS") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmSafetyAlert = false }) { Text("Cancel") }
+            },
+        )
+    }
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         RouteMap(ride.pickup, ride.destination, ride.driverLocation, Modifier.weight(1f))
         Card(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
@@ -471,6 +503,29 @@ private fun ActiveRideScreen(ride: Ride, driver: Boolean, isRideOwner: Boolean, 
                 Text("Payment: ${ride.payment.method.paymentLabel()} · ${ride.payment.status.paymentLabel()}")
                 ride.payment.splits.forEach { share ->
                     Text("${share.payerName}: ${money(share.amountCents, ride.quote.currency)} · ${share.status.paymentLabel()}")
+                }
+                ride.safetyAlert?.takeIf { it.status == "ACTIVE" }?.let { alert ->
+                    Text(
+                        "SOS ACTIVE · ${if (alert.triggeredBy == currentUserId) "sent by you" else "sent by the other ride participant"}",
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text("Reported location: ${alert.location.latitude}, ${alert.location.longitude}")
+                    if (driver || isRideOwner) {
+                        Button(
+                            onClick = { viewModel.resolveSafetyAlert(ride.id) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("Resolve SOS alert") }
+                    }
+                } ?: run {
+                    if ((driver || isRideOwner) &&
+                        ride.status in setOf(RideStatus.ACCEPTED, RideStatus.DRIVER_ARRIVING, RideStatus.IN_PROGRESS)
+                    ) {
+                        OutlinedButton(
+                            onClick = { confirmSafetyAlert = true },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("SOS · share my location") }
+                    }
                 }
                 if (driver && ride.status != RideStatus.SEARCHING) {
                     Button(viewModel::advanceRide, Modifier.fillMaxWidth().padding(top = 8.dp)) {

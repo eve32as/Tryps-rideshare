@@ -33,6 +33,14 @@ data class RidePass(
     val expiresAtEpochMillis: Long = 0,
 )
 
+data class RideSafetyAlert(
+    val status: String = "ACTIVE",
+    val triggeredBy: String = "",
+    val location: GeoPoint = GeoPoint(),
+    val createdAtEpochMillis: Long = 0,
+    val resolvedBy: String? = null,
+)
+
 data class GeoPoint(
     val latitude: Double = 0.0,
     val longitude: Double = 0.0,
@@ -94,4 +102,5 @@ data class Ride(
     val vehicleCategory: VehicleCategory = VehicleCategory.ANY,
     val matchingScoreSeconds: Int? = null,
     val payment: RidePayment = RidePayment(),
+    val safetyAlert: RideSafetyAlert? = null,
 )

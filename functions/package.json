@@ -4,7 +4,7 @@
   "description": "Tryps ride recommendations, pricing, and place search backend",
   "main": "index.js",
   "scripts": {
-    "test": "node --test && node --check index.js && node --check pricing.js && node --check payments.js && node --check weather.js"
+    "test": "node --test && node --check index.js && node --check pricing.js && node --check payments.js && node --check weather.js && node --check safety.js"
   },
   "keywords": [],
   "author": "",
