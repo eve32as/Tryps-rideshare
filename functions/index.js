@@ -880,7 +880,7 @@ exports.claimRideOffer = onCall({ region: REGION }, async (request) => {
       driverUid: uid,
       driverInfo: riderVisibleDriverProfile(driverSnapshot.data()),
       driverLocation: driverSnapshot.data().location,
-      driverLocationUpdatedAt: FieldValue.serverTimestamp(),
+      driverLocationUpdatedAt: driverSnapshot.data().locationUpdatedAt,
       assignedAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
