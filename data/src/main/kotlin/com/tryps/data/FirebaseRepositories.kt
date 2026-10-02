@@ -261,7 +261,7 @@ class FirebaseRideRepository(
                 if (error != null) {
                     close(error)
                 } else {
-                    matchingMetrics = snapshot?.get("matchingMetrics") as? Map<*, *> ?: emptyMap()
+                    matchingMetrics = snapshot?.get("matchingMetrics") as? Map<*, *> ?: emptyMap<Any?, Any?>()
                     emitState()
                 }
             }

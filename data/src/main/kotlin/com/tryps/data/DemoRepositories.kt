@@ -186,8 +186,9 @@ class DemoRideRepository : RideRepository {
 
     override suspend fun resolveSafetyAlert(rideId: String, userId: String) = update(rideId) { ride ->
         require(ride.riderId == userId || ride.driverId == userId)
-        require(ride.safetyAlert?.status == "ACTIVE")
-        ride.copy(safetyAlert = ride.safetyAlert.copy(status = "RESOLVED", resolvedBy = userId))
+        val safetyAlert = requireNotNull(ride.safetyAlert)
+        require(safetyAlert.status == "ACTIVE")
+        ride.copy(safetyAlert = safetyAlert.copy(status = "RESOLVED", resolvedBy = userId))
     }
 
     override suspend fun updateDriverLocation(
