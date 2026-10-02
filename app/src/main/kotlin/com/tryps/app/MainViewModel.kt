@@ -41,6 +41,7 @@ data class MainUiState(
     val transitOptions: List<TransitOption> = emptyList(),
     val transitSearched: Boolean = false,
     val currentLocation: GeoPoint? = null,
+    val currentLocationUpdatedAtEpochMillis: Long = 0,
     val isAvailable: Boolean = false,
     val isBusy: Boolean = false,
     val error: String? = null,
@@ -81,11 +82,28 @@ class MainViewModel(
 
     fun signOut() = action { accounts.signOut() }
 
-    fun updateLocation(location: GeoPoint) {
-        mutableState.update { it.copy(currentLocation = location) }
+    fun updateLocation(location: GeoPoint, observedAtEpochMillis: Long = System.currentTimeMillis()) {
+        mutableState.update {
+            if (observedAtEpochMillis >= it.currentLocationUpdatedAtEpochMillis) {
+                it.copy(currentLocation = location, currentLocationUpdatedAtEpochMillis = observedAtEpochMillis)
+            } else {
+                it
+            }
+        }
         val snapshot = state.value
-        if (snapshot.user?.role == UserRole.DRIVER && snapshot.isAvailable) {
-            action(showProgress = false) { rides.updateDriverLocation(snapshot.user.id, location, true) }
+        val locationAgeMillis = System.currentTimeMillis() - snapshot.currentLocationUpdatedAtEpochMillis
+        if (snapshot.user?.role == UserRole.DRIVER &&
+            (snapshot.isAvailable || snapshot.activeRide != null) &&
+            locationAgeMillis in 0..MAX_LOCATION_AGE_MILLIS
+        ) {
+            action(showProgress = false) {
+                rides.updateDriverLocation(
+                    snapshot.user.id,
+                    requireNotNull(snapshot.currentLocation),
+                    snapshot.isAvailable,
+                    snapshot.activeRide?.id,
+                )
+            }
         }
     }
 
@@ -214,8 +232,15 @@ class MainViewModel(
         mutableState.update { it.copy(isAvailable = available) }
         val snapshot = state.value
         val driver = snapshot.user ?: return
-        val location = snapshot.currentLocation ?: return
-        action(showProgress = false) { rides.updateDriverLocation(driver.id, location, available) }
+        val location = snapshot.currentLocation
+        val locationAgeMillis = System.currentTimeMillis() - snapshot.currentLocationUpdatedAtEpochMillis
+        if (available && (location == null || locationAgeMillis !in 0..MAX_LOCATION_AGE_MILLIS)) {
+            return showError("Waiting for a fresh location before going online")
+        }
+        if (location == null) return
+        action(showProgress = false) {
+            rides.updateDriverLocation(driver.id, location, available, snapshot.activeRide?.id)
+        }
     }
 
     fun rate(rideId: String, rating: Int) = action { rides.rate(rideId, rating) }
@@ -227,8 +252,12 @@ class MainViewModel(
 
     fun reportSafetyAlert(rideId: String) {
         val user = state.value.user ?: return
-        val location = state.value.currentLocation
+        val snapshot = state.value
+        val location = snapshot.currentLocation
             ?: return showError("Current location is unavailable; enable location before sending SOS")
+        if (System.currentTimeMillis() - snapshot.currentLocationUpdatedAtEpochMillis !in 0..MAX_SOS_LOCATION_AGE_MILLIS) {
+            return showError("Waiting for a fresh location before sending SOS")
+        }
         action { rides.reportSafetyAlert(rideId, user.id, location) }
     }
 
@@ -276,6 +305,11 @@ class MainViewModel(
 
     private fun showError(error: Throwable) = showError(error.message ?: "Something went wrong")
     private fun showError(message: String) = mutableState.update { it.copy(error = message, isBusy = false) }
+
+    private companion object {
+        const val MAX_LOCATION_AGE_MILLIS = 30_000L
+        const val MAX_SOS_LOCATION_AGE_MILLIS = 90_000L
+    }
 
     class Factory(
         private val accounts: AccountRepository,

@@ -190,7 +190,12 @@ class DemoRideRepository : RideRepository {
         ride.copy(safetyAlert = ride.safetyAlert.copy(status = "RESOLVED", resolvedBy = userId))
     }
 
-    override suspend fun updateDriverLocation(driverId: String, location: GeoPoint, available: Boolean) {
+    override suspend fun updateDriverLocation(
+        driverId: String,
+        location: GeoPoint,
+        available: Boolean,
+        activeRideId: String?,
+    ) {
         locations.value = locations.value + (driverId to location)
     }
 

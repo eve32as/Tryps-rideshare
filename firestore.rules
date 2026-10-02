@@ -73,6 +73,8 @@ service cloud.firestore {
         return resource.data.driverId == request.auth.uid
           && request.resource.data.diff(resource.data).affectedKeys()
             .hasOnly(["status", "driverLocation"])
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(["driverLocation"])
+            || resource.data.status in ["ACCEPTED", "DRIVER_ARRIVING", "IN_PROGRESS"])
           && (
             request.resource.data.status == resource.data.status ||
             resource.data.status == "ACCEPTED" && request.resource.data.status == "DRIVER_ARRIVING" ||

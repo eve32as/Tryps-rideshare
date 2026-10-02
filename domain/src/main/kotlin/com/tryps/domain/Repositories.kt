@@ -43,7 +43,12 @@ interface RideRepository {
     suspend fun resolveSafetyAlert(rideId: String, userId: String)
     suspend fun accept(rideId: String, driver: UserProfile)
     suspend fun updateStatus(rideId: String, status: RideStatus)
-    suspend fun updateDriverLocation(driverId: String, location: GeoPoint, available: Boolean)
+    suspend fun updateDriverLocation(
+        driverId: String,
+        location: GeoPoint,
+        available: Boolean,
+        activeRideId: String? = null,
+    )
     suspend fun cancel(rideId: String, userId: String)
     suspend fun rate(rideId: String, rating: Int)
 }

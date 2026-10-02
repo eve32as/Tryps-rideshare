@@ -344,7 +344,12 @@ class FirebaseRideRepository(
         firestore.collection("rides").document(rideId).update("status", status.name).await()
     }
 
-    override suspend fun updateDriverLocation(driverId: String, location: GeoPoint, available: Boolean) {
+    override suspend fun updateDriverLocation(
+        driverId: String,
+        location: GeoPoint,
+        available: Boolean,
+        activeRideId: String?,
+    ) {
         firestore.collection("drivers").document(driverId).set(
             mapOf(
                 "location" to location.toMap(),
@@ -352,10 +357,11 @@ class FirebaseRideRepository(
                 "updatedAt" to FieldValue.serverTimestamp(),
             ),
         ).await()
-        val activeRides = firestore.collection("rides").whereEqualTo("driverId", driverId).get().await()
-        activeRides.documents
-            .filter { enumValueOrDefault(it.getString("status"), RideStatus.COMPLETED) !in setOf(RideStatus.COMPLETED, RideStatus.CANCELLED) }
-            .forEach { it.reference.update("driverLocation", location.toMap()).await() }
+        if (activeRideId != null) {
+            firestore.collection("rides").document(activeRideId)
+                .update("driverLocation", location.toMap())
+                .await()
+        }
     }
 
     override suspend fun cancel(rideId: String, userId: String) {

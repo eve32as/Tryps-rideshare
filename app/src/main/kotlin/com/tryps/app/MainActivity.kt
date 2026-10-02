@@ -21,6 +21,7 @@ import com.google.android.gms.location.Priority
 import com.tryps.model.GeoPoint
 import com.tryps.model.RideStatus
 import com.tryps.model.UserRole
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -83,7 +84,7 @@ class MainActivity : ComponentActivity() {
     private fun loadLastLocation() {
         if (!hasLocationPermission()) return
         locationClient.lastLocation.addOnSuccessListener { location ->
-            location?.let { viewModel.updateLocation(GeoPoint(it.latitude, it.longitude)) }
+            location?.let(::publishLocation)
         }
     }
 
@@ -117,7 +118,12 @@ class MainActivity : ComponentActivity() {
 
     private fun publishLocation(location: Location) {
         if (location.hasAccuracy() && location.accuracy > MAX_ACCEPTED_ACCURACY_METERS) return
-        viewModel.updateLocation(GeoPoint(location.latitude, location.longitude))
+        val ageMillis = System.currentTimeMillis() - location.time
+        if (ageMillis !in 0..MAX_LOCATION_AGE_MILLIS) return
+        viewModel.updateLocation(
+            GeoPoint(location.latitude, location.longitude),
+            location.time,
+        )
     }
 
     private fun stopLocationUpdates() {
@@ -131,5 +137,6 @@ class MainActivity : ComponentActivity() {
         const val MIN_LOCATION_DISTANCE_METERS = 20f
         const val MAX_LOCATION_BATCH_DELAY_MILLIS = 15_000L
         const val MAX_ACCEPTED_ACCURACY_METERS = 200f
+        const val MAX_LOCATION_AGE_MILLIS = 30_000L
     }
 }
