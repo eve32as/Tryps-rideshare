@@ -34,6 +34,7 @@ const db = getFirestore();
 const REGION = "us-central1";
 const DRIVER_MATCH_RADIUS_KM = 15;
 const SURGE_SUPPLY_RADIUS_KM = 5;
+const ACTIVE_RIDE_STATUSES = ["driver_assigned", "en_route", "arrived", "in_progress"];
 const GOOGLE_ROUTES_API_KEY = defineSecret("GOOGLE_ROUTES_API_KEY");
 const STRIPE_SECRET_KEY = defineSecret("STRIPE_SECRET_KEY");
 const STRIPE_WEBHOOK_SECRET = defineSecret("STRIPE_WEBHOOK_SECRET");
@@ -779,6 +780,10 @@ exports.updateDriverLocation = onCall({ region: REGION }, async (request) => {
   }
 
   const driverRef = db.collection("drivers").doc(uid);
+  const activeRideQuery = db.collection("rides")
+    .where("driverUid", "==", uid)
+    .where("status", "in", ACTIVE_RIDE_STATUSES)
+    .limit(10);
   const withinServiceArea = isWithinServiceArea(location);
   const transactionResult = await db.runTransaction(async (transaction) => {
     const snapshot = await transaction.get(driverRef);
@@ -787,13 +792,8 @@ exports.updateDriverLocation = onCall({ region: REGION }, async (request) => {
     }
     let activeRidesSnapshot;
     if (!snapshot.data().available) {
-      activeRidesSnapshot = await transaction.get(
-        db.collection("rides").where("driverUid", "==", uid).limit(10)
-      );
-      const hasActiveRide = activeRidesSnapshot.docs.some((ride) =>
-        ["driver_assigned", "en_route", "arrived", "in_progress"].includes(ride.data().status)
-      );
-      if (!hasActiveRide) {
+      activeRidesSnapshot = await transaction.get(activeRideQuery);
+      if (activeRidesSnapshot.empty) {
         throw new HttpsError("failed-precondition", "Go online to update your driver location.");
       }
     }
@@ -812,18 +812,13 @@ exports.updateDriverLocation = onCall({ region: REGION }, async (request) => {
     return { updated: true, activeRidesSnapshot };
   });
   if (transactionResult.updated) {
-    const activeRides = transactionResult.activeRidesSnapshot ?? await db.collection("rides")
-      .where("driverUid", "==", uid)
-      .limit(10)
-      .get();
-    const activeStatuses = new Set(["driver_assigned", "en_route", "arrived", "in_progress"]);
+    const activeRides = transactionResult.activeRidesSnapshot ?? await activeRideQuery.get();
     await Promise.all(activeRides.docs
-      .filter((ride) => activeStatuses.has(ride.data().status))
       .map((ride) => db.runTransaction(async (transaction) => {
         const currentRide = await transaction.get(ride.ref);
         if (!currentRide.exists ||
             currentRide.data().driverUid !== uid ||
-            !activeStatuses.has(currentRide.data().status)) return;
+            !ACTIVE_RIDE_STATUSES.includes(currentRide.data().status)) return;
         transaction.update(ride.ref, {
           driverLocation: location,
           driverLocationUpdatedAt: FieldValue.serverTimestamp(),
