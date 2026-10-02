@@ -13,67 +13,74 @@ service cloud.firestore {
       return role == "RIDER" || role == "DRIVER";
     }
 
+    function validVehicleCategory(category, role) {
+      return role == "DRIVER"
+        ? category in ["STANDARD", "XL", "ACCESSIBLE", "LUXURY"]
+        : category in ["ANY", "STANDARD", "XL", "ACCESSIBLE", "LUXURY"];
+    }
+
     function hasRole(role) {
       return signedIn()
         && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == role;
     }
 
     match /users/{userId} {
-      allow read, update, delete: if isOwner(userId);
+      allow read, delete: if isOwner(userId);
+      allow update: if isOwner(userId)
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(["displayName", "phone", "vehicle", "vehicleCategory"])
+        && (!("vehicleCategory" in request.resource.data)
+          || validVehicleCategory(request.resource.data.vehicleCategory, resource.data.role));
       allow create: if isOwner(userId)
         && validRole(request.resource.data.role)
-        && request.resource.data.email == request.auth.token.email;
+        && request.resource.data.email == request.auth.token.email
+        && (!("vehicleCategory" in request.resource.data)
+          || validVehicleCategory(request.resource.data.vehicleCategory, request.resource.data.role))
+        && request.resource.data.keys().hasOnly([
+          "displayName", "email", "role", "rating", "vehicleCategory", "createdAt"
+        ]);
+
+      match /ridePasses/{passId} {
+        allow read: if isOwner(userId);
+        allow write: if false;
+      }
     }
 
     match /drivers/{driverId} {
       allow read: if isOwner(driverId);
-      allow create, update, delete: if isOwner(driverId) && hasRole("DRIVER");
+      allow create, update: if isOwner(driverId)
+        && hasRole("DRIVER")
+        && request.resource.data.keys().hasOnly(["location", "available", "updatedAt"])
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if isOwner(driverId) && hasRole("DRIVER");
     }
 
     match /rides/{rideId} {
       allow read: if signedIn() && (
         resource.data.status == "SEARCHING" ||
         resource.data.riderId == request.auth.uid ||
-        resource.data.driverId == request.auth.uid
+        resource.data.driverId == request.auth.uid ||
+        (resource.data.payment is map &&
+          resource.data.payment.payerIds is list &&
+          request.auth.uid in resource.data.payment.payerIds)
       );
 
-      allow create: if signedIn()
-        && request.resource.data.riderId == request.auth.uid
-        && request.resource.data.status == "SEARCHING"
-        && request.resource.data.driverId == null;
+      allow create: if false;
 
-      allow update: if signedIn() && (
-        validDriverAcceptance() ||
-        validParticipantUpdate() ||
-        validRiderRating()
-      );
-
-      function validDriverAcceptance() {
-        return resource.data.status == "SEARCHING"
-          && hasRole("DRIVER")
-          && request.resource.data.status == "ACCEPTED"
-          && request.resource.data.driverId == request.auth.uid
-          && request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly(["driverId", "driverName", "status"]);
-      }
+      allow update: if signedIn() && (validParticipantUpdate() || validRiderRating());
 
       function validParticipantUpdate() {
-        return (
-          resource.data.riderId == request.auth.uid
-          && request.resource.data.status == "CANCELLED"
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status"])
-        ) || (
-          resource.data.driverId == request.auth.uid
+        return resource.data.driverId == request.auth.uid
           && request.resource.data.diff(resource.data).affectedKeys()
             .hasOnly(["status", "driverLocation"])
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(["driverLocation"])
+            || resource.data.status in ["ACCEPTED", "DRIVER_ARRIVING", "IN_PROGRESS"])
           && (
             request.resource.data.status == resource.data.status ||
             resource.data.status == "ACCEPTED" && request.resource.data.status == "DRIVER_ARRIVING" ||
             resource.data.status == "DRIVER_ARRIVING" && request.resource.data.status == "IN_PROGRESS" ||
-            resource.data.status == "IN_PROGRESS" && request.resource.data.status == "COMPLETED" ||
-            request.resource.data.status == "CANCELLED"
-          )
-        );
+            resource.data.status == "IN_PROGRESS" && request.resource.data.status == "COMPLETED"
+          );
       }
 
       function validRiderRating() {

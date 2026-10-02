@@ -2,9 +2,65 @@ package com.tryps.model
 
 enum class UserRole { RIDER, DRIVER }
 
+enum class VehicleCategory { ANY, STANDARD, XL, ACCESSIBLE, LUXURY }
+
 enum class RideStatus {
     SEARCHING, ACCEPTED, DRIVER_ARRIVING, IN_PROGRESS, COMPLETED, CANCELLED
 }
+
+enum class RidePaymentMethod { CASH, SIMULATED_CARD, RIDE_PASS }
+
+enum class RidePaymentStatus { PENDING, RECEIVED, SIMULATED, COVERED_BY_PASS }
+
+data class RidePaymentShare(
+    val payerId: String = "",
+    val payerName: String = "",
+    val amountCents: Int = 0,
+    val status: RidePaymentStatus = RidePaymentStatus.PENDING,
+)
+
+data class RidePayment(
+    val method: RidePaymentMethod = RidePaymentMethod.SIMULATED_CARD,
+    val status: RidePaymentStatus = RidePaymentStatus.SIMULATED,
+    val amountCents: Int = 0,
+    val passId: String? = null,
+    val splits: List<RidePaymentShare> = emptyList(),
+)
+
+data class RidePass(
+    val id: String = "",
+    val remainingRides: Int = 0,
+    val expiresAtEpochMillis: Long = 0,
+)
+
+data class RideSafetyAlert(
+    val status: String = "ACTIVE",
+    val triggeredBy: String = "",
+    val location: GeoPoint = GeoPoint(),
+    val createdAtEpochMillis: Long = 0,
+    val resolvedBy: String? = null,
+)
+
+data class TransitStep(
+    val mode: String = "",
+    val instruction: String = "",
+    val lineName: String = "",
+    val agencyName: String = "",
+    val vehicleType: String = "",
+    val departureStop: String = "",
+    val arrivalStop: String = "",
+    val departureTime: String = "",
+    val arrivalTime: String = "",
+    val durationSeconds: Int = 0,
+    val distanceMeters: Int = 0,
+)
+
+data class TransitOption(
+    val durationSeconds: Int = 0,
+    val distanceMeters: Int = 0,
+    val walkingDurationSeconds: Int = 0,
+    val steps: List<TransitStep> = emptyList(),
+)
 
 data class GeoPoint(
     val latitude: Double = 0.0,
@@ -25,6 +81,15 @@ data class UserProfile(
     val role: UserRole = UserRole.RIDER,
     val vehicle: String = "",
     val rating: Double = 5.0,
+    val vehicleCategory: VehicleCategory = VehicleCategory.STANDARD,
+    val matchingMetrics: DriverMatchingMetrics = DriverMatchingMetrics(),
+)
+
+data class DriverMatchingMetrics(
+    val cancellationCount: Int = 0,
+    val completedRideCount: Int = 0,
+    val etaSampleCount: Int = 0,
+    val averageEtaErrorSeconds: Double = 0.0,
 )
 
 data class RideQuote(
@@ -32,6 +97,13 @@ data class RideQuote(
     val currency: String = "USD",
     val distanceMeters: Int = 0,
     val durationSeconds: Int = 0,
+    val baseAmountCents: Int = amountCents,
+    val surgeMultiplier: Double = 1.0,
+    val demandCount: Int = 0,
+    val availableDriverCount: Int = 0,
+    val quoteId: String? = null,
+    val weatherCondition: String = "UNAVAILABLE",
+    val weatherDemandUpliftPercent: Int = 0,
 )
 
 data class Ride(
@@ -47,4 +119,9 @@ data class Ride(
     val driverName: String = "",
     val driverLocation: GeoPoint? = null,
     val rating: Int? = null,
+    val pickupEtaSeconds: Int? = null,
+    val vehicleCategory: VehicleCategory = VehicleCategory.ANY,
+    val matchingScoreSeconds: Int? = null,
+    val payment: RidePayment = RidePayment(),
+    val safetyAlert: RideSafetyAlert? = null,
 )

@@ -5,9 +5,10 @@ Tryps is a Kotlin Android rideshare MVP for riders and drivers. It uses Jetpack 
 ## Features
 
 - Email/password registration and sign-in with rider and driver roles
-- Pickup and destination search, route map, server-calculated quote, and simulated payment
-- Ride request, driver acceptance, trip status, cancellation, history, and ratings
-- Driver availability and location updates
+- Pickup and destination search, route map, public-transit itinerary comparison, weather-aware demand outlooks, demand-aware server fare quotes, cash collection tracking, cash split allocation, and admin-issued ride passes
+- Ride request, category-aware driver acceptance, trip status, in-ride SOS alerts, cancellation, history, and ratings
+- Driver vehicle categories, availability, location updates, and traffic-aware pickup recommendations
+- Foreground-only live trip location updates for online drivers and active rides
 - Push-notification service for ride updates
 - Offline-friendly Firestore listeners and a no-credentials demo backend
 - Firestore security rules and server-only Google Routes/Places API access
@@ -20,7 +21,7 @@ Tryps is a Kotlin Android rideshare MVP for riders and drivers. It uses Jetpack 
 | `domain` | Repository contracts and business validation |
 | `data` | Firebase and in-memory demo repository implementations |
 | `core:model` | Shared immutable models |
-| `functions` | Authenticated quote and place-search Cloud Functions |
+| `functions` | Authenticated ride recommendations, transit itineraries, weather-aware locked fare quotes, payment/pass lifecycle, ride requests, and place-search Cloud Functions |
 
 ## Requirements
 
@@ -65,8 +66,19 @@ workflow can also be started manually from the Actions tab.
 
 ## Data model
 
-- `users/{uid}` stores account role and profile.
+- `users/{uid}` stores account role, profile, driver vehicle category, and server-maintained matching metrics.
 - `drivers/{uid}` stores availability and latest location.
-- `rides/{rideId}` stores route, server quote, participants, status, and optional rating.
+- `rides/{rideId}` stores route, requested vehicle category, server quote, participants, status, pickup ETA at acceptance, payment method/status, cash split shares, optional rating, and an optional participant-visible SOS alert.
+- `users/{uid}/ridePasses/{passId}` stores server-issued pass ride counts and expiration; clients may read but cannot issue or modify passes.
 
-Production dispatch should add server-side geospatial driver matching, token registration, notification triggers, payment processing, and stricter status-transition enforcement in trusted Cloud Functions.
+Ride recommendations use a deterministic reliability-adjusted score based on traffic-aware pickup ETA, driver cancellation/completion history, observed ETA error, and vehicle-category compatibility. Trusted Cloud Functions record cancellations, completions, and pickup-time error samples using idempotent events. Fare quotes apply capped 1.00×/1.25×/1.50× demand multipliers based on nearby open rides and recently available drivers; each rider-bound quote expires after five minutes and can be used for one ride request. Quotes also request an Open-Meteo hourly forecast for the pickup area and estimate the potential demand uplift over the next three hours from rain, snow, wind, or severe-weather indicators. This weather estimate is advisory only and does not affect the fare; unavailable weather data degrades to an explicit unavailable status. These deterministic estimates are heuristics, not trained ML, and automatic multi-driver assignment remains future work.
+
+Cash ride requests can allocate the fare in equal-cent shares across the requesting rider and up to four registered rider accounts. This is an offline cash arrangement only: the app does not charge invited participants, and the assigned driver confirms receipt of the total cash fare after completing the trip. A ride pass covers one ride per remaining pass credit; only a caller with the trusted Firebase Auth `admin` custom claim can issue passes through the `issueRidePass` Cloud Function (`ownerId`, `rideCount` from 1–50, and `validDays` from 1–365). Pass purchases and card processing are not implemented. The card choice remains explicitly simulated and never charges a card. Pass sales, card payments, refunds, and settlements require a payment-provider integration and its server-side verification/webhook setup.
+
+The weather outlook uses Open-Meteo's public forecast API and requires outbound HTTPS access from Cloud Functions; no API key is configured or stored. Forecast conditions are limited to the next three hours at the pickup coordinates. Do not interpret the estimated uplift as a calibrated demand prediction or as a pricing change.
+
+Riders can compare public-transit itineraries from Google Routes API using a departure time five minutes from the request. Itineraries show provider-supplied transit lines, stops, travel modes, and walking duration, but are informational only: they do not create a ride, reserve a seat, include transit fares, or alter the rideshare quote. The Firebase Functions secret `GOOGLE_MAPS_API_KEY` must have Routes API enabled and outbound access available. Demo mode intentionally shows no live transit options.
+
+During an accepted or active trip, either trip participant can submit an SOS alert containing the latest location available to the app. The alert appears in the rider and driver's live trip screen while they are connected and can be resolved by either participant. This MVP records the alert in Firestore; it does not send push notifications or call/notify emergency services, contacts, or dispatchers, and is not a substitute for calling local emergency services.
+
+Live location is sampled only while the app is foregrounded and a driver is online or either participant has an active ride. Updates request a minimum 20-meter change and a 10-second interval, discard fixes with accuracy worse than 200 meters, and stop when the app backgrounds or the driver goes offline. The app does not run a background location service.

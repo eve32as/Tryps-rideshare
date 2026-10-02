@@ -9,9 +9,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -51,10 +55,19 @@ import com.google.maps.android.compose.rememberCameraPositionState
 import com.tryps.model.GeoPoint
 import com.tryps.model.Place
 import com.tryps.model.Ride
+import com.tryps.model.RidePass
+import com.tryps.model.RidePaymentMethod
+import com.tryps.model.RidePaymentStatus
 import com.tryps.model.RideStatus
+import com.tryps.model.TransitOption
+import com.tryps.model.TransitStep
 import com.tryps.model.UserRole
+import com.tryps.model.VehicleCategory
 import java.text.NumberFormat
+import java.text.SimpleDateFormat
 import java.util.Currency
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun TrypsApp(viewModel: MainViewModel, demoMode: Boolean) {
@@ -87,6 +100,8 @@ private fun AuthScreen(demoMode: Boolean, busy: Boolean, viewModel: MainViewMode
     var email by remember { mutableStateOf(if (demoMode) "rider@demo.com" else "") }
     var password by remember { mutableStateOf(if (demoMode) "password" else "") }
     var role by remember { mutableStateOf(UserRole.RIDER) }
+    var vehicleCategory by remember { mutableStateOf(VehicleCategory.STANDARD) }
+    var categoryMenuExpanded by remember { mutableStateOf(false) }
     Column(
         Modifier.fillMaxSize().padding(28.dp),
         verticalArrangement = Arrangement.Center,
@@ -110,10 +125,31 @@ private fun AuthScreen(demoMode: Boolean, busy: Boolean, viewModel: MainViewMode
                     OutlinedButton(onClick = { role = it }, enabled = role != it) { Text(it.name.lowercase().replaceFirstChar(Char::uppercase)) }
                 }
             }
+            if (role == UserRole.DRIVER) {
+                Box {
+                    OutlinedButton(onClick = { categoryMenuExpanded = true }) {
+                        Text("Vehicle: ${vehicleCategory.label()}")
+                    }
+                    DropdownMenu(
+                        expanded = categoryMenuExpanded,
+                        onDismissRequest = { categoryMenuExpanded = false },
+                    ) {
+                        VehicleCategory.entries.filter { it != VehicleCategory.ANY }.forEach { category ->
+                            DropdownMenuItem(
+                                text = { Text(category.label()) },
+                                onClick = {
+                                    vehicleCategory = category
+                                    categoryMenuExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+            }
         }
         Button(
             onClick = {
-                if (register) viewModel.register(name, email, password, role) else viewModel.signIn(email, password)
+                if (register) viewModel.register(name, email, password, role, vehicleCategory) else viewModel.signIn(email, password)
             },
             enabled = !busy,
             modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
@@ -145,7 +181,7 @@ private fun HomeScreen(state: MainUiState, demoMode: Boolean, viewModel: MainVie
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
             when (tab) {
-                0 -> if (state.user?.role == UserRole.DRIVER) DriverScreen(state, viewModel) else RiderScreen(state, viewModel)
+                0 -> if (state.user?.role == UserRole.DRIVER) DriverScreen(state, viewModel) else RiderScreen(state, viewModel, demoMode)
                 1 -> HistoryScreen(state, viewModel)
                 else -> AccountScreen(state, viewModel)
             }
@@ -154,16 +190,22 @@ private fun HomeScreen(state: MainUiState, demoMode: Boolean, viewModel: MainVie
 }
 
 @Composable
-private fun RiderScreen(state: MainUiState, viewModel: MainViewModel) {
+private fun RiderScreen(state: MainUiState, viewModel: MainViewModel, demoMode: Boolean) {
     if (state.activeRide != null) {
-        ActiveRideScreen(state.activeRide, false, viewModel)
+        ActiveRideScreen(
+            state.activeRide,
+            driver = false,
+            isRideOwner = state.user?.id == state.activeRide.riderId,
+            currentUserId = state.user?.id.orEmpty(),
+            viewModel = viewModel,
+        )
         return
     }
     var pickupQuery by remember(state.pickup) { mutableStateOf(state.pickup?.name.orEmpty()) }
     var destinationQuery by remember(state.destination) { mutableStateOf(state.destination?.name.orEmpty()) }
     var searchTarget by remember { mutableStateOf<Boolean?>(null) }
-    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-        RouteMap(state.pickup, state.destination, state.currentLocation, Modifier.weight(1f))
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
+        RouteMap(state.pickup, state.destination, state.currentLocation, Modifier.fillMaxWidth().height(240.dp))
         Spacer(Modifier.height(8.dp))
         PlaceField(
             "Pickup",
@@ -180,22 +222,252 @@ private fun RiderScreen(state: MainUiState, viewModel: MainViewModel) {
             if (searchTarget == false) state.suggestions else emptyList(),
             { destinationQuery = it.name; viewModel.selectPlace(it, false); searchTarget = null },
         )
+        TextButton(
+            onClick = viewModel::findTransitOptions,
+            enabled = state.pickup != null && state.destination != null && !state.isBusy,
+        ) { Text("Compare public transit") }
+        if (state.transitSearched) {
+            if (state.transitOptions.isEmpty()) {
+                Text(
+                    if (demoMode) "Public transit requires the configured Google Routes API and is unavailable in demo mode."
+                    else "No transit itineraries were found for this route.",
+                )
+            } else {
+                state.transitOptions.forEachIndexed { index, option ->
+                    TransitOptionCard(option, index)
+                }
+            }
+        }
+        VehicleCategorySelector(state.requestedVehicleCategory, viewModel::selectVehicleCategory)
         if (state.quote == null) {
             Button(viewModel::getQuote, Modifier.fillMaxWidth().padding(vertical = 12.dp)) { Text("See price") }
         } else {
             Card(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
                 Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                     Column {
-                        Text("Standard ride", fontWeight = FontWeight.Bold)
+                        Text("${state.requestedVehicleCategory.label()} ride", fontWeight = FontWeight.Bold)
                         Text("${state.quote.distanceMeters / 1000.0} km · ${state.quote.durationSeconds / 60} min")
-                        Text("Simulated payment ·•••• 4242")
+                        Text("Base fare: ${money(state.quote.baseAmountCents, state.quote.currency)}")
+                        if (state.quote.surgeMultiplier > 1.0) {
+                            Text(
+                                "Demand adjustment ×${state.quote.surgeMultiplier} · " +
+                                    "${state.quote.demandCount} nearby rides / " +
+                                    "${state.quote.availableDriverCount} available drivers",
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        } else {
+                            Text("No demand adjustment · ×1.0")
+                        }
+                        Text(
+                            "Weather outlook (next 3h): ${state.quote.weatherCondition.weatherLabel()}" +
+                                if (state.quote.weatherDemandUpliftPercent > 0) {
+                                    " · estimated demand +${state.quote.weatherDemandUpliftPercent}%"
+                                } else {
+                                    ""
+                                },
+                            color = if (state.quote.weatherCondition == "SEVERE") {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
+                        )
+                        if (state.quote.weatherCondition != "UNAVAILABLE") {
+                            Text("Weather demand estimate is informational and does not change this fare.")
+                        }
+                        Text(
+                            when (state.paymentMethod) {
+                                RidePaymentMethod.CASH -> "Cash collected by the driver after the trip"
+                                RidePaymentMethod.RIDE_PASS -> "Covered by an eligible ride pass"
+                                RidePaymentMethod.SIMULATED_CARD -> "Simulated card · no charge will be made"
+                            },
+                        )
                     }
                     Text(money(state.quote.amountCents, state.quote.currency), style = MaterialTheme.typography.titleLarge)
                 }
             }
-            Button(viewModel::requestRide, Modifier.fillMaxWidth().padding(bottom = 12.dp)) { Text("Request Tryps") }
+            PaymentMethodSelector(state.paymentMethod, viewModel::selectPaymentMethod)
+            when (state.paymentMethod) {
+                RidePaymentMethod.CASH -> OutlinedTextField(
+                    value = state.splitParticipantEmails,
+                    onValueChange = viewModel::setSplitParticipantEmails,
+                    label = { Text("Split with rider emails (optional)") },
+                    supportingText = { Text("Up to four riders, comma-separated; all shares are collected in cash") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                RidePaymentMethod.RIDE_PASS -> RidePassSelector(
+                    state.ridePasses,
+                    state.selectedRidePassId,
+                    viewModel::selectRidePass,
+                )
+                RidePaymentMethod.SIMULATED_CARD -> Text(
+                    "Card processing is not connected; this selection is for demo/testing only.",
+                    modifier = Modifier.padding(vertical = 8.dp),
+                )
+            }
+            val canRequest = state.paymentMethod != RidePaymentMethod.RIDE_PASS ||
+                state.ridePasses.any { it.id == state.selectedRidePassId }
+            Button(
+                viewModel::requestRide,
+                Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                enabled = canRequest,
+            ) { Text("Request Tryps") }
         }
     }
+}
+
+@Composable
+private fun TransitOptionCard(option: TransitOption, index: Int) {
+    Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Column(Modifier.padding(12.dp)) {
+            Text(
+                "Public transit ${index + 1} · ${durationLabel(option.durationSeconds)}",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Text("${option.distanceMeters / 1000.0} km · ${durationLabel(option.walkingDurationSeconds)} walking")
+            option.steps.forEach { TransitStepRow(it) }
+            Text("Transit fares are not included. This itinerary is informational, not a ride booking.")
+            Text("Transit itinerary provided by Google Maps", style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+@Composable
+private fun TransitStepRow(step: TransitStep) {
+    val line = listOf(step.agencyName, step.vehicleType, step.lineName)
+        .filter(String::isNotBlank)
+        .distinct()
+        .joinToString(" · ")
+    val endpoints = listOf(step.departureStop, step.arrivalStop)
+        .filter(String::isNotBlank)
+        .joinToString(" → ")
+    val times = listOfNotNull(step.departureTime.transitTimeLabel(), step.arrivalTime.transitTimeLabel())
+        .joinToString("–")
+    Text(
+        when (step.mode) {
+            "WALK" -> "Walk ${durationLabel(step.durationSeconds)}"
+            else -> listOf(line, endpoints, times, step.instruction)
+                .filter(String::isNotBlank)
+                .joinToString(" · ")
+                .ifBlank { "Transit segment · ${durationLabel(step.durationSeconds)}" }
+        },
+        modifier = Modifier.padding(top = 4.dp),
+    )
+}
+
+private fun durationLabel(seconds: Int): String {
+    val minutes = (seconds.coerceAtLeast(0) + 59) / 60
+    return if (minutes >= 60) "${minutes / 60}h ${minutes % 60}m" else "$minutes min"
+}
+
+private fun String.transitTimeLabel(): String? = takeIf(String::isNotBlank)?.let { value ->
+    runCatching {
+        val parsed = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.ROOT).parse(value)
+            ?: return@runCatching null
+        SimpleDateFormat("h:mm a", Locale.getDefault()).format(parsed)
+    }.getOrNull()
+}
+
+@Composable
+private fun PaymentMethodSelector(selected: RidePaymentMethod, onSelect: (RidePaymentMethod) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box(Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = { expanded = true }) {
+            Text("Payment: ${selected.paymentLabel()}")
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            RidePaymentMethod.entries.forEach { method ->
+                DropdownMenuItem(
+                    text = { Text(method.paymentLabel()) },
+                    onClick = {
+                        onSelect(method)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RidePassSelector(
+    passes: List<RidePass>,
+    selectedId: String?,
+    onSelect: (String?) -> Unit,
+) {
+    if (passes.isEmpty()) {
+        Text("No active passes. Passes must be issued to your account.", modifier = Modifier.padding(vertical = 8.dp))
+        return
+    }
+    var expanded by remember { mutableStateOf(false) }
+    Box(Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = { expanded = true }) {
+            val selected = passes.firstOrNull { it.id == selectedId }
+            Text(selected?.let { "Pass: ${it.remainingRides} rides remaining" } ?: "Choose a ride pass")
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            passes.forEach { pass ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            "${pass.remainingRides} rides · expires " +
+                                SimpleDateFormat("MMM d, yyyy", Locale.getDefault()).format(Date(pass.expiresAtEpochMillis)),
+                        )
+                    },
+                    onClick = {
+                        onSelect(pass.id)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+private fun RidePaymentMethod.paymentLabel(): String = when (this) {
+    RidePaymentMethod.CASH -> "Cash"
+    RidePaymentMethod.SIMULATED_CARD -> "Simulated card"
+    RidePaymentMethod.RIDE_PASS -> "Ride pass"
+}
+
+private fun String.weatherLabel(): String = when (this) {
+    "CLEAR" -> "clear"
+    "RAIN_POSSIBLE" -> "rain possible"
+    "RAIN" -> "rain"
+    "SNOW" -> "snow"
+    "WIND" -> "high winds"
+    "SEVERE" -> "severe conditions"
+    else -> "unavailable"
+}
+
+@Composable
+private fun VehicleCategorySelector(selected: VehicleCategory, onSelect: (VehicleCategory) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        OutlinedButton(onClick = { expanded = true }) {
+            Text("Vehicle preference: ${selected.label()}")
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            VehicleCategory.entries.forEach { category ->
+                DropdownMenuItem(
+                    text = { Text(category.label()) },
+                    onClick = {
+                        onSelect(category)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+private fun VehicleCategory.label(): String = when (this) {
+    VehicleCategory.ANY -> "No preference"
+    VehicleCategory.STANDARD -> "Standard"
+    VehicleCategory.XL -> "XL"
+    VehicleCategory.ACCESSIBLE -> "Accessible"
+    VehicleCategory.LUXURY -> "Luxury"
 }
 
 @Composable
@@ -216,7 +488,7 @@ private fun PlaceField(label: String, value: String, onChange: (String) -> Unit,
 @Composable
 private fun DriverScreen(state: MainUiState, viewModel: MainViewModel) {
     state.activeRide?.let {
-        ActiveRideScreen(it, true, viewModel)
+        ActiveRideScreen(it, true, false, state.user?.id.orEmpty(), viewModel)
         return
     }
     Column(Modifier.fillMaxSize().padding(16.dp)) {
@@ -229,13 +501,29 @@ private fun DriverScreen(state: MainUiState, viewModel: MainViewModel) {
         }
         Spacer(Modifier.height(16.dp))
         Text("Nearby requests", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        state.user?.matchingMetrics?.let { metrics ->
+            Text("${metrics.completedRideCount} completed · ${metrics.cancellationCount} driver cancellations")
+            if (metrics.etaSampleCount > 0) {
+                Text("Average pickup ETA error: ${metrics.averageEtaErrorSeconds.toInt()} sec (${metrics.etaSampleCount} trips)")
+            }
+        }
         if (!state.isAvailable) Text("Go online to receive requests", modifier = Modifier.padding(top = 16.dp))
         else if (state.openRides.isEmpty()) Text("Searching for riders…", modifier = Modifier.padding(top = 16.dp))
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(state.openRides, key = Ride::id) { ride ->
+            itemsIndexed(state.openRides, key = { _, ride -> ride.id }) { index, ride ->
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
+                        ride.pickupEtaSeconds?.let { eta ->
+                            val minutes = ((eta + 59) / 60).coerceAtLeast(1)
+                            Text(
+                                if (index == 0) "Best traffic-aware match · ~$minutes min to pickup"
+                                else "~$minutes min to pickup",
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
                         Text(ride.riderName.ifBlank { "Rider" }, fontWeight = FontWeight.Bold)
+                        Text("Vehicle: ${ride.vehicleCategory.label()}")
                         Text("${ride.pickup.name} → ${ride.destination.name}")
                         Text(money(ride.quote.amountCents, ride.quote.currency))
                         Button({ viewModel.acceptRide(ride.id) }, Modifier.fillMaxWidth()) { Text("Accept ride") }
@@ -247,7 +535,37 @@ private fun DriverScreen(state: MainUiState, viewModel: MainViewModel) {
 }
 
 @Composable
-private fun ActiveRideScreen(ride: Ride, driver: Boolean, viewModel: MainViewModel) {
+private fun ActiveRideScreen(
+    ride: Ride,
+    driver: Boolean,
+    isRideOwner: Boolean,
+    currentUserId: String,
+    viewModel: MainViewModel,
+) {
+    var confirmSafetyAlert by remember(ride.id) { mutableStateOf(false) }
+    if (confirmSafetyAlert) {
+        AlertDialog(
+            onDismissRequest = { confirmSafetyAlert = false },
+            title = { Text("Send SOS alert?") },
+            text = {
+                Text(
+                    "Your latest available location and SOS status will be shared with the other person on this ride. " +
+                        "This does not contact emergency services; call your local emergency number if you are in immediate danger.",
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmSafetyAlert = false
+                        viewModel.reportSafetyAlert(ride.id)
+                    },
+                ) { Text("Send SOS") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmSafetyAlert = false }) { Text("Cancel") }
+            },
+        )
+    }
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         RouteMap(ride.pickup, ride.destination, ride.driverLocation, Modifier.weight(1f))
         Card(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
@@ -255,6 +573,33 @@ private fun ActiveRideScreen(ride: Ride, driver: Boolean, viewModel: MainViewMod
                 Text(ride.status.name.replace("_", " "), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text("${ride.pickup.name} → ${ride.destination.name}")
                 Text(if (driver) "Rider: ${ride.riderName}" else if (ride.driverName.isBlank()) "Finding your driver…" else "Driver: ${ride.driverName}")
+                Text("Payment: ${ride.payment.method.paymentLabel()} · ${ride.payment.status.paymentLabel()}")
+                ride.payment.splits.forEach { share ->
+                    Text("${share.payerName}: ${money(share.amountCents, ride.quote.currency)} · ${share.status.paymentLabel()}")
+                }
+                ride.safetyAlert?.takeIf { it.status == "ACTIVE" }?.let { alert ->
+                    Text(
+                        "SOS ACTIVE · ${if (alert.triggeredBy == currentUserId) "sent by you" else "sent by the other ride participant"}",
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text("Reported location: ${alert.location.latitude}, ${alert.location.longitude}")
+                    if (driver || isRideOwner) {
+                        Button(
+                            onClick = { viewModel.resolveSafetyAlert(ride.id) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("Resolve SOS alert") }
+                    }
+                } ?: run {
+                    if ((driver || isRideOwner) &&
+                        ride.status in setOf(RideStatus.ACCEPTED, RideStatus.DRIVER_ARRIVING, RideStatus.IN_PROGRESS)
+                    ) {
+                        OutlinedButton(
+                            onClick = { confirmSafetyAlert = true },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("SOS · share my location") }
+                    }
+                }
                 if (driver && ride.status != RideStatus.SEARCHING) {
                     Button(viewModel::advanceRide, Modifier.fillMaxWidth().padding(top = 8.dp)) {
                         Text(when (ride.status) {
@@ -265,7 +610,7 @@ private fun ActiveRideScreen(ride: Ride, driver: Boolean, viewModel: MainViewMod
                         })
                     }
                 }
-                if (ride.status != RideStatus.IN_PROGRESS) {
+                if (ride.status != RideStatus.IN_PROGRESS && (driver || isRideOwner)) {
                     OutlinedButton(viewModel::cancelRide, Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Cancel ride") }
                 }
             }
@@ -303,7 +648,18 @@ private fun HistoryScreen(state: MainUiState, viewModel: MainViewModel) {
                 Column(Modifier.padding(16.dp)) {
                     Text("${ride.pickup.name} → ${ride.destination.name}", fontWeight = FontWeight.Bold)
                     Text("${ride.status.name.lowercase().replaceFirstChar(Char::uppercase)} · ${money(ride.quote.amountCents, ride.quote.currency)}")
-                    if (state.user?.role == UserRole.RIDER && ride.status == RideStatus.COMPLETED && ride.rating == null) {
+                    Text("Payment: ${ride.payment.method.paymentLabel()} · ${ride.payment.status.paymentLabel()}")
+                    ride.payment.splits.forEach { share ->
+                        Text("${share.payerName}: ${money(share.amountCents, ride.quote.currency)} · ${share.status.paymentLabel()}")
+                    }
+                    if (state.user?.role == UserRole.DRIVER &&
+                        ride.status == RideStatus.COMPLETED &&
+                        ride.payment.method == RidePaymentMethod.CASH &&
+                        ride.payment.status == RidePaymentStatus.PENDING
+                    ) {
+                        Button({ viewModel.confirmCashPayment(ride.id) }) { Text("Confirm cash received") }
+                    }
+                    if (state.user?.id == ride.riderId && ride.status == RideStatus.COMPLETED && ride.rating == null) {
                         Row { (1..5).forEach { rating -> TextButton({ viewModel.rate(ride.id, rating) }) { Text("★$rating") } } }
                     }
                 }
@@ -330,3 +686,10 @@ private fun GeoPoint.toLatLng() = LatLng(latitude, longitude)
 private fun money(cents: Int, currency: String): String = NumberFormat.getCurrencyInstance().apply {
     this.currency = runCatching { Currency.getInstance(currency) }.getOrDefault(Currency.getInstance("USD"))
 }.format(cents / 100.0)
+
+private fun RidePaymentStatus.paymentLabel(): String = when (this) {
+    RidePaymentStatus.PENDING -> "awaiting driver confirmation"
+    RidePaymentStatus.RECEIVED -> "received"
+    RidePaymentStatus.SIMULATED -> "simulated, not charged"
+    RidePaymentStatus.COVERED_BY_PASS -> "covered by pass"
+}
