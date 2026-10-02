@@ -13,6 +13,7 @@ import com.tryps.model.RidePass
 import com.tryps.model.RidePaymentMethod
 import com.tryps.model.RideQuote
 import com.tryps.model.RideStatus
+import com.tryps.model.TransitOption
 import com.tryps.model.UserProfile
 import com.tryps.model.UserRole
 import com.tryps.model.VehicleCategory
@@ -37,6 +38,8 @@ data class MainUiState(
     val destination: Place? = null,
     val suggestions: List<Place> = emptyList(),
     val quote: RideQuote? = null,
+    val transitOptions: List<TransitOption> = emptyList(),
+    val transitSearched: Boolean = false,
     val currentLocation: GeoPoint? = null,
     val isAvailable: Boolean = false,
     val isBusy: Boolean = false,
@@ -88,7 +91,14 @@ class MainViewModel(
 
     fun useCurrentLocationForPickup() {
         val location = state.value.currentLocation ?: return showError("Current location is unavailable")
-        mutableState.update { it.copy(pickup = Place("Current location", "GPS location", location), quote = null) }
+        mutableState.update {
+            it.copy(
+                pickup = Place("Current location", "GPS location", location),
+                quote = null,
+                transitOptions = emptyList(),
+                transitSearched = false,
+            )
+        }
     }
 
     fun searchPlaces(query: String) {
@@ -107,8 +117,17 @@ class MainViewModel(
 
     fun selectPlace(place: Place, pickup: Boolean) {
         mutableState.update {
-            if (pickup) it.copy(pickup = place, suggestions = emptyList(), quote = null)
-            else it.copy(destination = place, suggestions = emptyList(), quote = null)
+            if (pickup) it.copy(pickup = place, suggestions = emptyList(), quote = null, transitOptions = emptyList(), transitSearched = false)
+            else it.copy(destination = place, suggestions = emptyList(), quote = null, transitOptions = emptyList(), transitSearched = false)
+        }
+    }
+
+    fun findTransitOptions() {
+        val snapshot = state.value
+        RideValidation.routeError(snapshot.pickup, snapshot.destination)?.let { return showError(it) }
+        action {
+            val options = rides.transitOptions(requireNotNull(snapshot.pickup), requireNotNull(snapshot.destination))
+            mutableState.update { it.copy(transitOptions = options, transitSearched = true) }
         }
     }
 

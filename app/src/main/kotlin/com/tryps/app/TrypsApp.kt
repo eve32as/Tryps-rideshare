@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -57,6 +59,8 @@ import com.tryps.model.RidePass
 import com.tryps.model.RidePaymentMethod
 import com.tryps.model.RidePaymentStatus
 import com.tryps.model.RideStatus
+import com.tryps.model.TransitOption
+import com.tryps.model.TransitStep
 import com.tryps.model.UserRole
 import com.tryps.model.VehicleCategory
 import java.text.NumberFormat
@@ -177,7 +181,7 @@ private fun HomeScreen(state: MainUiState, demoMode: Boolean, viewModel: MainVie
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
             when (tab) {
-                0 -> if (state.user?.role == UserRole.DRIVER) DriverScreen(state, viewModel) else RiderScreen(state, viewModel)
+                0 -> if (state.user?.role == UserRole.DRIVER) DriverScreen(state, viewModel) else RiderScreen(state, viewModel, demoMode)
                 1 -> HistoryScreen(state, viewModel)
                 else -> AccountScreen(state, viewModel)
             }
@@ -186,7 +190,7 @@ private fun HomeScreen(state: MainUiState, demoMode: Boolean, viewModel: MainVie
 }
 
 @Composable
-private fun RiderScreen(state: MainUiState, viewModel: MainViewModel) {
+private fun RiderScreen(state: MainUiState, viewModel: MainViewModel, demoMode: Boolean) {
     if (state.activeRide != null) {
         ActiveRideScreen(
             state.activeRide,
@@ -200,8 +204,8 @@ private fun RiderScreen(state: MainUiState, viewModel: MainViewModel) {
     var pickupQuery by remember(state.pickup) { mutableStateOf(state.pickup?.name.orEmpty()) }
     var destinationQuery by remember(state.destination) { mutableStateOf(state.destination?.name.orEmpty()) }
     var searchTarget by remember { mutableStateOf<Boolean?>(null) }
-    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-        RouteMap(state.pickup, state.destination, state.currentLocation, Modifier.weight(1f))
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
+        RouteMap(state.pickup, state.destination, state.currentLocation, Modifier.fillMaxWidth().height(240.dp))
         Spacer(Modifier.height(8.dp))
         PlaceField(
             "Pickup",
@@ -218,6 +222,22 @@ private fun RiderScreen(state: MainUiState, viewModel: MainViewModel) {
             if (searchTarget == false) state.suggestions else emptyList(),
             { destinationQuery = it.name; viewModel.selectPlace(it, false); searchTarget = null },
         )
+        TextButton(
+            onClick = viewModel::findTransitOptions,
+            enabled = state.pickup != null && state.destination != null && !state.isBusy,
+        ) { Text("Compare public transit") }
+        if (state.transitSearched) {
+            if (state.transitOptions.isEmpty()) {
+                Text(
+                    if (demoMode) "Public transit requires the configured Google Routes API and is unavailable in demo mode."
+                    else "No transit itineraries were found for this route.",
+                )
+            } else {
+                state.transitOptions.forEachIndexed { index, option ->
+                    TransitOptionCard(option, index)
+                }
+            }
+        }
         VehicleCategorySelector(state.requestedVehicleCategory, viewModel::selectVehicleCategory)
         if (state.quote == null) {
             Button(viewModel::getQuote, Modifier.fillMaxWidth().padding(vertical = 12.dp)) { Text("See price") }
@@ -294,6 +314,59 @@ private fun RiderScreen(state: MainUiState, viewModel: MainViewModel) {
             ) { Text("Request Tryps") }
         }
     }
+}
+
+@Composable
+private fun TransitOptionCard(option: TransitOption, index: Int) {
+    Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Column(Modifier.padding(12.dp)) {
+            Text(
+                "Public transit ${index + 1} · ${durationLabel(option.durationSeconds)}",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Text("${option.distanceMeters / 1000.0} km · ${durationLabel(option.walkingDurationSeconds)} walking")
+            option.steps.forEach { TransitStepRow(it) }
+            Text("Transit fares are not included. This itinerary is informational, not a ride booking.")
+            Text("Transit itinerary provided by Google Maps", style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+@Composable
+private fun TransitStepRow(step: TransitStep) {
+    val line = listOf(step.agencyName, step.vehicleType, step.lineName)
+        .filter(String::isNotBlank)
+        .distinct()
+        .joinToString(" · ")
+    val endpoints = listOf(step.departureStop, step.arrivalStop)
+        .filter(String::isNotBlank)
+        .joinToString(" → ")
+    val times = listOfNotNull(step.departureTime.transitTimeLabel(), step.arrivalTime.transitTimeLabel())
+        .joinToString("–")
+    Text(
+        when (step.mode) {
+            "WALK" -> "Walk ${durationLabel(step.durationSeconds)}"
+            else -> listOf(line, endpoints, times, step.instruction)
+                .filter(String::isNotBlank)
+                .joinToString(" · ")
+                .ifBlank { "Transit segment · ${durationLabel(step.durationSeconds)}" }
+        },
+        modifier = Modifier.padding(top = 4.dp),
+    )
+}
+
+private fun durationLabel(seconds: Int): String {
+    val minutes = (seconds.coerceAtLeast(0) + 59) / 60
+    return if (minutes >= 60) "${minutes / 60}h ${minutes % 60}m" else "$minutes min"
+}
+
+private fun String.transitTimeLabel(): String? = takeIf(String::isNotBlank)?.let { value ->
+    runCatching {
+        val parsed = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.ROOT).parse(value)
+            ?: return@runCatching null
+        SimpleDateFormat("h:mm a", Locale.getDefault()).format(parsed)
+    }.getOrNull()
 }
 
 @Composable

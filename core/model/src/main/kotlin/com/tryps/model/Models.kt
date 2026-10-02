@@ -41,6 +41,27 @@ data class RideSafetyAlert(
     val resolvedBy: String? = null,
 )
 
+data class TransitStep(
+    val mode: String = "",
+    val instruction: String = "",
+    val lineName: String = "",
+    val agencyName: String = "",
+    val vehicleType: String = "",
+    val departureStop: String = "",
+    val arrivalStop: String = "",
+    val departureTime: String = "",
+    val arrivalTime: String = "",
+    val durationSeconds: Int = 0,
+    val distanceMeters: Int = 0,
+)
+
+data class TransitOption(
+    val durationSeconds: Int = 0,
+    val distanceMeters: Int = 0,
+    val walkingDurationSeconds: Int = 0,
+    val steps: List<TransitStep> = emptyList(),
+)
+
 data class GeoPoint(
     val latitude: Double = 0.0,
     val longitude: Double = 0.0,

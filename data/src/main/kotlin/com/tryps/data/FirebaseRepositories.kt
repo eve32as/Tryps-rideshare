@@ -20,6 +20,8 @@ import com.tryps.model.RidePaymentStatus
 import com.tryps.model.RideQuote
 import com.tryps.model.RideStatus
 import com.tryps.model.RideSafetyAlert
+import com.tryps.model.TransitOption
+import com.tryps.model.TransitStep
 import com.tryps.model.UserProfile
 import com.tryps.model.UserRole
 import com.tryps.model.VehicleCategory
@@ -119,6 +121,38 @@ class FirebaseRideRepository(
                 address = map["address"] as? String ?: "",
                 location = map["location"].toGeoPoint(),
             )
+        }
+    }
+
+    override suspend fun transitOptions(pickup: Place, destination: Place): List<TransitOption> {
+        val result = functions.getHttpsCallable("getTransitOptions")
+            .call(mapOf("pickup" to pickup.location.toMap(), "destination" to destination.location.toMap()))
+            .await()
+            .getData() as? Map<*, *> ?: error("Invalid transit response")
+        return (result["options"] as? List<*>).orEmpty().mapNotNull { value ->
+            val option = value as? Map<*, *> ?: return@mapNotNull null
+            val steps = (option["steps"] as? List<*>).orEmpty().mapNotNull { stepValue ->
+                val step = stepValue as? Map<*, *> ?: return@mapNotNull null
+                TransitStep(
+                    mode = step["mode"] as? String ?: "",
+                    instruction = step["instruction"] as? String ?: "",
+                    lineName = step["lineName"] as? String ?: "",
+                    agencyName = step["agencyName"] as? String ?: "",
+                    vehicleType = step["vehicleType"] as? String ?: "",
+                    departureStop = step["departureStop"] as? String ?: "",
+                    arrivalStop = step["arrivalStop"] as? String ?: "",
+                    departureTime = step["departureTime"] as? String ?: "",
+                    arrivalTime = step["arrivalTime"] as? String ?: "",
+                    durationSeconds = (step["durationSeconds"] as? Number)?.toInt() ?: 0,
+                    distanceMeters = (step["distanceMeters"] as? Number)?.toInt() ?: 0,
+                )
+            }
+            TransitOption(
+                durationSeconds = (option["durationSeconds"] as? Number)?.toInt() ?: return@mapNotNull null,
+                distanceMeters = (option["distanceMeters"] as? Number)?.toInt() ?: 0,
+                walkingDurationSeconds = (option["walkingDurationSeconds"] as? Number)?.toInt() ?: 0,
+                steps = steps,
+            ).takeIf { steps.any { step -> step.mode == "TRANSIT" } }
         }
     }
 

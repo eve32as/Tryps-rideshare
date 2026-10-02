@@ -15,6 +15,7 @@ const {
 const { calculateSurgeMultiplier, distanceMeters } = require("./pricing");
 const { allocateEqualShares, isRidePassUsable, validatePaymentRequest } = require("./payments");
 const { canAccessRideSafetyAlert, canResolveSafetyAlert, canTriggerSafetyAlert } = require("./safety");
+const { parseTransitOptions } = require("./transit");
 const { getWeatherDemandForecast } = require("./weather");
 
 initializeApp();
@@ -103,6 +104,49 @@ exports.getRideQuote = onCall({ secrets: [googleMapsApiKey] }, async (request) =
     durationSeconds,
     rateVersion: rateCard.version,
   };
+});
+
+exports.getTransitOptions = onCall({ secrets: [googleMapsApiKey] }, async (request) => {
+  requireAuthentication(request);
+  const pickup = parsePoint(request.data?.pickup);
+  const destination = parsePoint(request.data?.destination);
+  const profile = await getFirestore().collection("users").doc(request.auth.uid).get();
+  if (!profile.exists || profile.get("role") !== "RIDER") {
+    throw new HttpsError("permission-denied", "Only riders can request transit options");
+  }
+  const response = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Goog-Api-Key": googleMapsApiKey.value(),
+      "X-Goog-FieldMask": [
+        "routes.duration",
+        "routes.distanceMeters",
+        "routes.legs.steps.travelMode",
+        "routes.legs.steps.staticDuration",
+        "routes.legs.steps.distanceMeters",
+        "routes.legs.steps.navigationInstruction.instructions",
+        "routes.legs.steps.transitDetails.transitLine.name",
+        "routes.legs.steps.transitDetails.transitLine.nameShort",
+        "routes.legs.steps.transitDetails.transitLine.agencies",
+        "routes.legs.steps.transitDetails.transitLine.vehicle",
+        "routes.legs.steps.transitDetails.stopDetails",
+        "routes.legs.steps.transitDetails.departureTime",
+        "routes.legs.steps.transitDetails.arrivalTime",
+      ].join(","),
+    },
+    body: JSON.stringify({
+      origin: { location: { latLng: pickup } },
+      destination: { location: { latLng: destination } },
+      travelMode: "TRANSIT",
+      departureTime: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      transitPreferences: { routingPreference: "LESS_WALKING" },
+    }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) throw new HttpsError("unavailable", "Transit options are temporarily unavailable");
+  const result = parseTransitOptions((await response.json()).routes);
+  return { options: result };
 });
 
 exports.requestRide = onCall(async (request) => {

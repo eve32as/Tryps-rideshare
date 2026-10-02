@@ -13,6 +13,7 @@ import com.tryps.model.RidePaymentStatus
 import com.tryps.model.RideQuote
 import com.tryps.model.RideStatus
 import com.tryps.model.RideSafetyAlert
+import com.tryps.model.TransitOption
 import com.tryps.model.UserProfile
 import com.tryps.model.UserRole
 import com.tryps.model.VehicleCategory
@@ -53,6 +54,8 @@ class DemoRideRepository : RideRepository {
 
     override suspend fun searchPlaces(query: String, near: GeoPoint?): List<Place> =
         samplePlaces.filter { it.name.contains(query, true) || it.address.contains(query, true) }
+
+    override suspend fun transitOptions(pickup: Place, destination: Place): List<TransitOption> = emptyList()
 
     override fun observeActiveRide(userId: String, role: UserRole): Flow<Ride?> =
         combine(rides, locations) { current, driverLocations ->

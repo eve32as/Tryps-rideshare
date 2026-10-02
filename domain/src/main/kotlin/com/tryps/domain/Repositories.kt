@@ -6,6 +6,7 @@ import com.tryps.model.Ride
 import com.tryps.model.RideQuote
 import com.tryps.model.RidePass
 import com.tryps.model.RidePaymentMethod
+import com.tryps.model.TransitOption
 import com.tryps.model.RideStatus
 import com.tryps.model.UserProfile
 import com.tryps.model.UserRole
@@ -21,6 +22,7 @@ interface AccountRepository {
 
 interface RideRepository {
     suspend fun searchPlaces(query: String, near: GeoPoint?): List<Place>
+    suspend fun transitOptions(pickup: Place, destination: Place): List<TransitOption>
     fun observeActiveRide(userId: String, role: UserRole): Flow<Ride?>
     fun observeHistory(userId: String, role: UserRole): Flow<List<Ride>>
     fun observeRidePasses(riderId: String): Flow<List<RidePass>>
