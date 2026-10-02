@@ -89,6 +89,10 @@ class MainViewModel(
         }
     }
 
+    fun reportLocationUnavailable() {
+        if (state.value.error == null) showError("Location updates are unavailable; check location permission and device settings")
+    }
+
     fun useCurrentLocationForPickup() {
         val location = state.value.currentLocation ?: return showError("Current location is unavailable")
         mutableState.update {

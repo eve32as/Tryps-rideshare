@@ -8,6 +8,7 @@ Tryps is a Kotlin Android rideshare MVP for riders and drivers. It uses Jetpack 
 - Pickup and destination search, route map, public-transit itinerary comparison, weather-aware demand outlooks, demand-aware server fare quotes, cash collection tracking, cash split allocation, and admin-issued ride passes
 - Ride request, category-aware driver acceptance, trip status, in-ride SOS alerts, cancellation, history, and ratings
 - Driver vehicle categories, availability, location updates, and traffic-aware pickup recommendations
+- Foreground-only live trip location updates for online drivers and active rides
 - Push-notification service for ride updates
 - Offline-friendly Firestore listeners and a no-credentials demo backend
 - Firestore security rules and server-only Google Routes/Places API access
@@ -79,3 +80,5 @@ The weather outlook uses Open-Meteo's public forecast API and requires outbound 
 Riders can compare public-transit itineraries from Google Routes API using a departure time five minutes from the request. Itineraries show provider-supplied transit lines, stops, travel modes, and walking duration, but are informational only: they do not create a ride, reserve a seat, include transit fares, or alter the rideshare quote. The Firebase Functions secret `GOOGLE_MAPS_API_KEY` must have Routes API enabled and outbound access available. Demo mode intentionally shows no live transit options.
 
 During an accepted or active trip, either trip participant can submit an SOS alert containing the latest location available to the app. The alert appears in the rider and driver's live trip screen while they are connected and can be resolved by either participant. This MVP records the alert in Firestore; it does not send push notifications or call/notify emergency services, contacts, or dispatchers, and is not a substitute for calling local emergency services.
+
+Live location is sampled only while the app is foregrounded and a driver is online or either participant has an active ride. Updates request a minimum 20-meter change and a 10-second interval, discard fixes with accuracy worse than 200 meters, and stop when the app backgrounds or the driver goes offline. The app does not run a background location service.
